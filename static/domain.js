@@ -1,7 +1,6 @@
 export const EXCEL_COLUMNS = [
   "Num.",
-  "Cliente",
-  "Data",
+  "Fornitore",
   "Fattura",
   "Valore in USD",
   "Valore in Euro",
@@ -19,8 +18,7 @@ export const EXCEL_COLUMNS = [
 
 export const EXPORT_TEMPLATE_COLUMNS = [
   "Num.",
-  "Cliente",
-  "Data",
+  "Fornitore",
   "Fattura",
   "Valore in USD",
   "Valore in Euro",
@@ -29,14 +27,12 @@ export const EXPORT_TEMPLATE_COLUMNS = [
   "Totale",
   "Uscite",
   "Da pagare ancora",
-  "Fattura anno 2019 - 2020-2021-2022 - 2023",
+  "Data fattura",
   "Scadenza",
   "Stato",
   "BANCA - C/C",
   "Termini pagamento fattura",
-  "NOTE VARIE",
-  "Ulteriori Note",
-  "Cambio",
+  "Note",
 ];
 
 export const STATUS_OK = "Pagato";
@@ -155,7 +151,9 @@ export function normalizeStatus(value) {
 
 export function normalizeRow(row = {}) {
   const stringRow = Object.fromEntries(Object.entries(row).map(([key, value]) => [String(key), value ?? ""]));
+  if (!stringRow.Fornitore) stringRow.Fornitore = stringRow.Cliente || "";
   if (!stringRow["Data fattura"]) stringRow["Data fattura"] = stringRow[OLD_DATE_COLUMN] || "";
+  if (!stringRow["Data fattura"]) stringRow["Data fattura"] = stringRow.Data || "";
   if (!stringRow.Imponibile) stringRow.Imponibile = stringRow[OLD_VALUE_COLUMN] || "";
   if (!stringRow.Uscite) stringRow.Uscite = stringRow[OLD_OUTGOING_COLUMN] || "";
   if (!stringRow["Da pagare ancora"]) stringRow["Da pagare ancora"] = stringRow[OLD_OUTSTANDING_COLUMN] || "";
@@ -169,7 +167,6 @@ export function normalizeRow(row = {}) {
   const normalized = Object.fromEntries(EXCEL_COLUMNS.map((column) => [column, String(stringRow[column] || "")]));
   for (const column of EURO_COLUMNS) normalized[column] = formatCurrency(normalized[column], "€");
   normalized["Valore in USD"] = formatCurrency(normalized["Valore in USD"], "$");
-  normalized.Data = normalizeDate(normalized.Data);
   normalized["Data fattura"] = normalizeDate(normalized["Data fattura"]);
   normalized.Scadenza = normalizeDate(normalized.Scadenza);
   return normalized;
@@ -189,9 +186,9 @@ export function checksFromRow(row) {
 
 export function invoiceKeyFromRow(row) {
   const normalized = normalizeRow(row);
-  const supplier = normalizeKey(normalized.Cliente);
+  const supplier = normalizeKey(normalized.Fornitore);
   const number = normalizeKey(normalized.Fattura);
-  const date = normalizeKey(normalized.Data);
+  const date = normalizeKey(normalized["Data fattura"]);
   const total = normalizeKey(normalized.Totale);
   return supplier && number ? `${supplier}|${number}|${date}|${total}` : "";
 }
@@ -203,6 +200,34 @@ export function normalizeTransfers(transferData = null) {
   return [];
 }
 
+function uniqueNonEmpty(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function transferDateLabel(transfer = {}) {
+  return normalizeDate(transfer.executionDate || transfer.documentDate || "");
+}
+
+function bankAccountLabel(invoice, transfers) {
+  const lines = uniqueNonEmpty(transfers.map((transfer) => {
+    const bank = cleanText(transfer.bank || "");
+    const iban = cleanText(transfer.beneficiaryIban || invoice.iban || "");
+    if (bank && iban) return `${bank}\n${iban}`;
+    return bank || iban;
+  }));
+  if (lines.length) return lines.join("\n");
+  const fallbackBank = cleanText(invoice.bank || "");
+  const fallbackIban = cleanText(invoice.iban || "");
+  return [fallbackBank, fallbackIban].filter(Boolean).join("\n");
+}
+
+function paymentTermsLabel(invoice, transfers) {
+  const datedTransfer = transfers.find((transfer) => transferDateLabel(transfer));
+  if (datedTransfer) return `Bonifico in data ${transferDateLabel(datedTransfer)}`;
+  if (invoice.paymentTerms) return invoice.paymentTerms;
+  return "Bonifico";
+}
+
 export function recalculateRecord(invoice, transfers, index, matchDebug = null, source = "upload") {
   const safeTransfers = normalizeTransfers(transfers);
   const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total);
@@ -212,12 +237,10 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
     ? (invoice.taxableUsd ?? decimalFromIt(invoice.taxable) ?? decimalFromIt(invoice.total))
     : null;
   const paidAmount = safeTransfers.reduce((sum, transfer) => sum + (transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0), 0);
-  const primaryBank = [...new Set(safeTransfers.map((transfer) => transfer.bank).filter(Boolean))].join(" / ");
   const remainingLabel = outstandingLabel(invoiceTotal, paidAmount);
   const row = normalizeRow({
     "Num.": String(index),
-    Cliente: invoice.supplier || safeTransfers[0]?.beneficiary || "",
-    Data: invoice.invoiceDate || "",
+    Fornitore: invoice.supplier || safeTransfers[0]?.beneficiary || "",
     Fattura: invoice.invoiceNumber || "",
     "Valore in USD": taxableUsd !== null ? decimalToIt(taxableUsd) : "",
     "Valore in Euro": decimalToIt(taxableEuro),
@@ -228,8 +251,8 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
     "Da pagare ancora": remainingLabel,
     "Data fattura": invoice.invoiceDate || "",
     Scadenza: invoice.dueDate || addDays(invoice.invoiceDate || "", 30),
-    "BANCA - C/C": primaryBank,
-    "Termini pagamento fattura": invoice.paymentTerms || "",
+    "BANCA - C/C": bankAccountLabel(invoice, safeTransfers),
+    "Termini pagamento fattura": paymentTermsLabel(invoice, safeTransfers),
     Note: "",
   });
   const checks = [
@@ -381,12 +404,16 @@ export function pairDocuments(invoices, transfers) {
 }
 
 export function exportRowFromRecord(record) {
-  const row = normalizeRow(record.row || {});
-  const exchangeRate = record.invoice?.exchangeRate;
+  const sourceRow = normalizeRow(record.row || {});
+  const transfers = normalizeTransfers(record.transfers || record.transfer || []);
+  const row = normalizeRow({
+    ...sourceRow,
+    "BANCA - C/C": sourceRow["BANCA - C/C"] || bankAccountLabel(record.invoice || {}, transfers),
+    "Termini pagamento fattura": sourceRow["Termini pagamento fattura"] || paymentTermsLabel(record.invoice || {}, transfers),
+  });
   return [
     row["Num."],
-    row.Cliente,
-    row.Data,
+    row.Fornitore,
     row.Fattura,
     row["Valore in USD"],
     row["Valore in Euro"],
@@ -401,7 +428,5 @@ export function exportRowFromRecord(record) {
     row["BANCA - C/C"],
     row["Termini pagamento fattura"],
     row.Note,
-    "",
-    exchangeRate ? String(exchangeRate).replace(".", ",") : "",
   ];
 }

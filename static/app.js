@@ -1,6 +1,5 @@
 import {
   buildXlsx,
-  buildRecord,
   classifyDocuments,
   parseXlsxRows,
   recordsFromImportedRows,
@@ -37,8 +36,10 @@ const excelName = document.querySelector("#excelName");
 const toast = document.querySelector("#toast");
 const searchInput = document.querySelector("#searchInput");
 const statusFilter = document.querySelector("#statusFilter");
-const fromDate = document.querySelector("#fromDate");
-const toDate = document.querySelector("#toDate");
+const invoiceDateFrom = document.querySelector("#invoiceDateFrom");
+const invoiceDateTo = document.querySelector("#invoiceDateTo");
+const dueDateFrom = document.querySelector("#dueDateFrom");
+const dueDateTo = document.querySelector("#dueDateTo");
 const exportExcelButton = document.querySelector("#exportExcelButton");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
@@ -51,7 +52,6 @@ let unsubscribe = null;
 
 const compactColumns = new Set([
   "Num.",
-  "Data",
   "Fattura",
   "Valore in USD",
   "Valore in Euro",
@@ -72,6 +72,8 @@ const numericColumns = new Set([
   "Totale",
   "Uscite",
 ]);
+
+const multilineColumns = new Set(["Fornitore", "BANCA - C/C", "Termini pagamento fattura", "Note", "Match"]);
 
 function showToast(message) {
   toast.textContent = message;
@@ -109,9 +111,9 @@ function isOk(record) {
 function invoiceFromRecord(record) {
   if (record.invoice && Object.keys(record.invoice).length) return record.invoice;
   return {
-    supplier: record.row?.Cliente || "",
+    supplier: record.row?.Fornitore || record.row?.Cliente || "",
     invoiceNumber: record.row?.Fattura || "",
-    invoiceDate: record.row?.Data || "",
+    invoiceDate: record.row?.["Data fattura"] || record.row?.Data || "",
     taxable: record.row?.Imponibile || record.row?.["Valore in Euro"] || "",
     taxableEur: parseAmount(record.row?.Imponibile || record.row?.["Valore in Euro"]),
     vat: record.row?.IVA || "",
@@ -125,36 +127,55 @@ function invoiceFromRecord(record) {
   };
 }
 
+function displayTransferDate(record) {
+  const transfers = normalizeTransfers(record.transfers || record.transfer || []);
+  const dated = transfers.find((transfer) => transfer.executionDate || transfer.documentDate);
+  return dated ? (dated.executionDate || dated.documentDate) : "";
+}
+
+function displayBankCell(record) {
+  const rowValue = record.row?.["BANCA - C/C"] || "";
+  if (rowValue.includes("\n")) return rowValue;
+  const transfers = normalizeTransfers(record.transfers || record.transfer || []);
+  const iban = transfers[0]?.beneficiaryIban || record.invoice?.iban || "";
+  if (!rowValue && !iban) return "";
+  return [rowValue, iban].filter(Boolean).join("\n");
+}
+
+function displayPaymentTerms(record) {
+  const rowValue = record.row?.["Termini pagamento fattura"] || "";
+  if (rowValue.toLowerCase().includes(" in data ")) return rowValue;
+  const date = displayTransferDate(record);
+  if (date) return `Bonifico in data ${date}`;
+  return rowValue || "Bonifico";
+}
+
+function cellValue(record, column) {
+  if (column === "BANCA - C/C") return displayBankCell(record);
+  if (column === "Termini pagamento fattura") return displayPaymentTerms(record);
+  return record.row?.[column] || "";
+}
+
 function filteredRecords() {
   const query = searchInput.value.trim().toLowerCase();
   const status = statusFilter.value;
-  const start = fromDate.value;
-  const end = toDate.value;
+  const invoiceStart = invoiceDateFrom.value;
+  const invoiceEnd = invoiceDateTo.value;
+  const dueStart = dueDateFrom.value;
+  const dueEnd = dueDateTo.value;
   return records.filter((record) => {
-    const row = record.row || {};
-    const haystack = columns.map((column) => row[column] || "").join(" ").toLowerCase();
-    const date = parseDate(row.Data);
+    const haystack = columns.map((column) => cellValue(record, column)).join(" ").toLowerCase();
+    const invoiceDate = parseDate(record.row?.["Data fattura"]);
+    const dueDate = parseDate(record.row?.Scadenza);
     if (query && !haystack.includes(query)) return false;
     if (status === "ok" && !isOk(record)) return false;
     if (status === "verify" && isOk(record)) return false;
-    if (start && date && date < start) return false;
-    if (end && date && date > end) return false;
+    if (invoiceStart && invoiceDate && invoiceDate < invoiceStart) return false;
+    if (invoiceEnd && invoiceDate && invoiceDate > invoiceEnd) return false;
+    if (dueStart && dueDate && dueDate < dueStart) return false;
+    if (dueEnd && dueDate && dueDate > dueEnd) return false;
     return true;
   });
-}
-
-function makeSelect(recordId, column, value, options) {
-  const select = document.createElement("select");
-  select.className = "cell-select compact";
-  for (const optionValue of options) {
-    const option = document.createElement("option");
-    option.value = optionValue;
-    option.textContent = optionValue;
-    option.selected = optionValue === value;
-    select.appendChild(option);
-  }
-  select.addEventListener("change", () => saveCell(recordId, column, select.value));
-  return select;
 }
 
 function makeStatusSelect(record) {
@@ -248,7 +269,8 @@ function renderTable() {
       td.dataset.column = column;
       if (compactColumns.has(column)) td.classList.add("is-compact");
       if (numericColumns.has(column)) td.classList.add("is-numeric");
-      td.textContent = record.row?.[column] || "";
+      if (multilineColumns.has(column)) td.classList.add("is-multiline");
+      td.textContent = cellValue(record, column);
       td.contentEditable = "true";
       td.title = "Modifica e poi esci dalla cella per salvare";
       td.addEventListener("blur", () => saveCell(record.id, column, td.textContent));
@@ -347,7 +369,7 @@ async function attachTransfersToExistingRecords(transfers, uploadsByName) {
 }
 
 async function removeRecord(record) {
-  const label = [record.row?.Cliente, record.row?.Fattura].filter(Boolean).join(" - ") || "questa riga";
+  const label = [record.row?.Fornitore || record.row?.Cliente, record.row?.Fattura].filter(Boolean).join(" - ") || "questa riga";
   if (!window.confirm(`Vuoi eliminare ${label}?`)) return;
   try {
     await deleteRecord(record.id);
@@ -476,7 +498,9 @@ saveCloudConfigButton.addEventListener("click", async () => {
 });
 
 for (const element of [documentsInput, excelInput]) element.addEventListener("change", updateFileLabels);
-for (const element of [searchInput, statusFilter, fromDate, toDate]) element.addEventListener("input", renderTable);
+for (const element of [searchInput, statusFilter, invoiceDateFrom, invoiceDateTo, dueDateFrom, dueDateTo]) {
+  element.addEventListener("input", renderTable);
+}
 
 showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, !isCloudConfigured());
 updateFileLabels();

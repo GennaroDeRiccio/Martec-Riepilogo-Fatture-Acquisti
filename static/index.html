@@ -118,7 +118,7 @@
             <span>Ricerca globale</span>
             <input id="searchInput" type="search" placeholder="Cerca fornitore, fattura, banca o note">
           </label>
-          <label>
+          <label class="filter-status">
             <span>Stato</span>
             <select id="statusFilter">
               <option value="">Tutti</option>
@@ -127,12 +127,20 @@
             </select>
           </label>
           <label>
-            <span>Dal</span>
-            <input id="fromDate" type="date" aria-label="Data da">
+            <span>Data fattura dal</span>
+            <input id="invoiceDateFrom" type="date" aria-label="Data fattura da">
           </label>
           <label>
-            <span>Al</span>
-            <input id="toDate" type="date" aria-label="Data a">
+            <span>Data fattura al</span>
+            <input id="invoiceDateTo" type="date" aria-label="Data fattura a">
+          </label>
+          <label>
+            <span>Scadenza dal</span>
+            <input id="dueDateFrom" type="date" aria-label="Scadenza da">
+          </label>
+          <label>
+            <span>Scadenza al</span>
+            <input id="dueDateTo" type="date" aria-label="Scadenza a">
           </label>
         </section>
 

@@ -287,27 +287,6 @@ function excelSerialToDate(value) {
 }
 
 export async function parseXlsxRows(file) {
-  const importColumns = [
-    "Num.",
-    "Cliente",
-    "Data",
-    "Fattura",
-    "Valore in USD",
-    "Valore in Euro",
-    "Imponibile",
-    "IVA",
-    "Totale",
-    "Uscite",
-    "Da pagare ancora",
-    "Data fattura",
-    "Scadenza",
-    "Incasso avvenuto",
-    "BANCA - C/C",
-    "Termini pagamento fattura",
-    "Note",
-    "Ulteriori Note",
-    "Cambio",
-  ];
   const zip = await JSZip.loadAsync(file instanceof Blob ? await file.arrayBuffer() : file);
   const parser = new DOMParser();
   const workbook = parser.parseFromString(await zip.file("xl/workbook.xml").async("string"), "application/xml");
@@ -338,13 +317,19 @@ export async function parseXlsxRows(file) {
     rows.get(rowNumber)[columnIndex(ref)] = value;
   });
   const imported = [];
+  const headerValues = rows.get(1) || {};
+  const headerByIndex = new Map(
+    Object.entries(headerValues).map(([index, value]) => [Number(index), cleanText(value)]),
+  );
   [...rows.keys()].sort((a, b) => a - b).forEach((rowNumber) => {
     if (rowNumber <= 2) return;
     const values = rows.get(rowNumber);
     if (![2, 3, 4, 5, 6].some((col) => values[col])) return;
     const row = {};
-    importColumns.forEach((column, index) => {
-      let value = values[index + 1] || "";
+    Object.entries(values).forEach(([index, rawValue]) => {
+      const column = headerByIndex.get(Number(index));
+      if (!column) return;
+      let value = rawValue || "";
       if (["Data", "Data fattura", "Scadenza"].includes(column) && /^\d+(\.\d+)?$/.test(value)) value = excelSerialToDate(value);
       row[column] = value;
     });
@@ -423,9 +408,11 @@ function buildSheetXml(records, template) {
     totals.Uscite += decimalFromIt(row[9]) || 0;
   });
   const endRow = Math.max(3, rows.length + 2);
-  const headerStyles = [118, 108, 116, 116, 120, 116, 1, 1, 2, 2, 2, 106, 108, 110, 97, 112, 114, 104, 105];
-  const totalsStyles = [119, 109, 117, 117, 121, 117, 3, 3, 3, 4, 4, 107, 109, 111, 98, 113, 115, 104, 105];
-  const dataStyles = [18, 19, 20, 21, 22, 23, 10, 24, 25, 26, 23, 27, 27, 28, 100, 17, 63, 35, 80];
+  const lastColumnRef = cellRef(1, EXPORT_TEMPLATE_COLUMNS.length).replace(/\d+/g, "");
+  const columnCount = EXPORT_TEMPLATE_COLUMNS.length;
+  const headerStyles = [118, 108, 116, 120, 116, 1, 1, 2, 2, 2, 106, 108, 110, 97, 112, 114];
+  const totalsStyles = [119, 109, 117, 121, 117, 3, 3, 4, 4, 4, 107, 109, 111, 98, 113, 115];
+  const dataStyles = [18, 19, 21, 22, 23, 10, 24, 25, 26, 23, 27, 27, 28, 100, 17, 63];
 
   const headerCells = EXPORT_TEMPLATE_COLUMNS.map((label, index) =>
     `<c r="${cellRef(1, index + 1)}" s="${headerStyles[index]}" t="inlineStr"><is><t>${escapeXml(label)}</t></is></c>`,
@@ -434,8 +421,8 @@ function buildSheetXml(records, template) {
   const totalsKeys = ["Imponibile", "IVA", "Totale", "Uscite", null];
   const totalsCells = totalsStyles.map((style, index) => {
     const ref = cellRef(2, index + 1);
-    if (index < 6 || index > 10) return `<c r="${ref}" s="${style}" />`;
-    const key = totalsKeys[index - 6];
+    if (index < 5 || index > 9) return `<c r="${ref}" s="${style}" />`;
+    const key = totalsKeys[index - 5];
     if (!key) return `<c r="${ref}" s="${style}" />`;
     return `<c r="${ref}" s="${style}"><f>SUBTOTAL(9,${cellRef(3, index + 1)}:${cellRef(endRow, index + 1)})</f><v>${decimalAsExcel(decimalToIt(totals[key])) || "0"}</v></c>`;
   }).join("");
@@ -445,31 +432,31 @@ function buildSheetXml(records, template) {
     const cells = row.map((value, index) => {
       const ref = cellRef(r, index + 1);
       const style = dataStyles[index];
-      if ([3, 12, 13].includes(index + 1)) {
+      if ([11, 12].includes(index + 1)) {
         const serial = excelSerialFromDate(value);
         return serial ? `<c r="${ref}" s="${style}"><v>${serial}</v></c>` : `<c r="${ref}" s="${style}" />`;
       }
-      if ([1, 5, 6, 7, 8, 9, 10, 11, 19].includes(index + 1)) {
+      if ([1, 4, 5, 6, 7, 8, 9].includes(index + 1)) {
         const number = decimalAsExcel(value);
         return number ? `<c r="${ref}" s="${style}"><v>${number}</v></c>` : `<c r="${ref}" s="${style}" />`;
       }
       return value ? `<c r="${ref}" s="${style}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>` : `<c r="${ref}" s="${style}" />`;
     }).join("");
-    return `<row r="${r}" spans="1:19" ht="20.100000000000001" customHeight="1">${cells}</row>`;
+    return `<row r="${r}" spans="1:${columnCount}" ht="28" customHeight="1">${cells}</row>`;
   }).join("");
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="${NS_MAIN}">
-<dimension ref="A1:S${Math.max(2, rows.length + 2)}" />
+<dimension ref="A1:${lastColumnRef}${Math.max(2, rows.length + 2)}" />
 ${template.sheetViews}
 ${template.sheetFormatPr}
 ${template.cols}
 <sheetData>
-<row r="1" spans="1:19" ht="58.8" customHeight="1">${headerCells}</row>
-<row r="2" spans="1:19" ht="22.5" customHeight="1" thickBot="1">${totalsCells}</row>
+<row r="1" spans="1:${columnCount}" ht="58.8" customHeight="1">${headerCells}</row>
+<row r="2" spans="1:${columnCount}" ht="22.5" customHeight="1" thickBot="1">${totalsCells}</row>
 ${bodyRows}
 </sheetData>
-<autoFilter ref="A2:S${Math.max(2, rows.length + 2)}" />
+<autoFilter ref="A2:${lastColumnRef}${Math.max(2, rows.length + 2)}" />
 ${template.mergeCells}
 ${template.pageMargins}
 </worksheet>`;
@@ -501,7 +488,7 @@ export async function buildXlsx(records) {
 <workbook xmlns="${NS_MAIN}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <bookViews><workbookView xWindow="-108" yWindow="-108" windowWidth="23256" windowHeight="12456"/></bookViews>
 <sheets><sheet name="MARTEC" sheetId="1" r:id="rId1"/></sheets>
-<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">MARTEC!$A$2:$S$${Math.max(2, records.length + 2)}</definedName></definedNames>
+<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">MARTEC!$A$2:$P$${Math.max(2, records.length + 2)}</definedName></definedNames>
 <calcPr calcId="181029"/>
 </workbook>`);
   zip.folder("xl").folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
