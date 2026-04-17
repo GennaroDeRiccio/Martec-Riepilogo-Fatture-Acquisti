@@ -156,6 +156,70 @@ function findTransferCurrency(fullText) {
   return detectDocumentCurrency(fullText, explicit);
 }
 
+function detectInvoicePaymentMethod(fullText, explicitValue = "") {
+  const source = `${explicitValue}\n${fullText}`.toUpperCase();
+  if (/PAYPAL/.test(source)) return "PayPal";
+  if (/CARTA DI CREDITO|CARTA DI PAGAMENTO|MP08/.test(source)) return "Carta di credito";
+  if (/\bRIBA\b|\bMP12\b/.test(source)) return "RIBA";
+  if (/BONIFICO|CREDIT TRANSFER|SEPA|MP05/.test(source)) return "Bonifico";
+  return cleanText(explicitValue || "");
+}
+
+export async function parseRibaEffects(file) {
+  const items = await extractPdfItems(file);
+  const fullText = linesFromItems(items).join("\n");
+  if (!/(Pagamento Effetti|Dettaglio Presentazione)/i.test(fullText) || !/Dati effetto/i.test(fullText)) return [];
+
+  const bank = firstMatch("(INTESA SANPAOLO S\\.P\\.A\\.)", fullText)
+    || firstMatch("ABI:\\s*\\d+\\s*-\\s*([A-Z ]+)", fullText, "i");
+  const payer = valueOnSameRow(items, "Ragione Sociale:", { valueMinX: 120 })
+    || firstMatch("Ragione Sociale:\\s+(.+?)\\s+Codice SIA:", fullText, "is");
+  const payerIban = firstMatch("Conto di addebito:\\s*(IT\\d{2}[A-Z]\\d{22})", fullText, "i");
+  const documentDate = normalizeDate(firstMatch("Data:\\s+(\\d{2}\\.\\d{2}\\.\\d{4})", fullText, "i"));
+  const flowName = firstMatch("Nome Flusso:\\s+(.+?)\\s+Data/Ora:", fullText, "is");
+
+  const effects = [];
+  const effectBlocks = fullText
+    .split(/Dati effetto/gi)
+    .map((block) => cleanText(block))
+    .filter((block) => /Importo/i.test(block) && /Creditore/i.test(block));
+
+  for (const block of effectBlocks) {
+    const amount = firstMatch("Importo\\s+([\\d.]+,\\d{2})\\s+EUR", block, "i")
+      || firstMatch("Importo\\s+([\\d.]+,\\d{2})", block, "i");
+    const dueDate = firstMatch("Scadenza\\s+(\\d{2}\\.\\d{2}\\.\\d{4})", block, "i");
+    const beneficiary = firstMatch("Creditore\\s+(.+?)\\s+Codice Fiscale \\/ Partita IVA", block, "is")
+      || firstMatch("Creditore\\s+(.+?)\\s+Debitore su avviso", block, "is");
+    const beneficiaryVat = firstMatch("Codice Fiscale \\/ Partita IVA\\s+([A-Z0-9]+)", block, "i");
+    const noticeNumber = firstMatch("Numero avviso\\s+([0-9]+)", block, "i");
+    const referenceOperation = firstMatch("Riferimento Operazione\\s+(.+)$", block, "is");
+    if (!amount || !beneficiary) continue;
+    effects.push({
+      type: "transfer",
+      paymentType: "RIBA",
+      documentDate,
+      executionDate: documentDate,
+      dueDate: normalizeDate(dueDate),
+      total: cleanText(amount),
+      currency: "EUR",
+      totalEur: decimalFromIt(amount),
+      bank: cleanText(bank),
+      payer: cleanText(payer),
+      payerIban: cleanText(payerIban),
+      beneficiary: cleanText(beneficiary),
+      beneficiaryVat: cleanText(beneficiaryVat),
+      beneficiaryIban: "",
+      swift: "",
+      reason: cleanText(referenceOperation),
+      noticeNumber: cleanText(noticeNumber),
+      flowName: cleanText(flowName),
+      rawText: fullText,
+    });
+  }
+
+  return effects;
+}
+
 export async function extractPdfItems(file) {
   const data = file instanceof ArrayBuffer ? file : await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data });
@@ -206,7 +270,9 @@ export async function parseInvoice(file) {
   if (!total) total = firstMatch("Totale documento\\s+(\\d+,\\d{2})", fullText, "i");
   const iban = firstMatch("\\b(IT\\d{2}[A-Z]\\d{22})\\b", fullText, "i");
   const dueDate = firstMatch("Data scadenza\\s+Importo.*?\\n.*?(\\d{2}-\\d{2}-\\d{4})", fullText, "is");
-  const paymentTerms = /\bBonifico\b/i.test(fullText) ? "Bonifico" : valueOnSameRow(items, "Modalità pagamento");
+  const explicitPaymentTerms = valueOnSameRow(items, "Modalità pagamento")
+    || firstMatch("Modalità pagamento\\s+(.+)", fullText, "i");
+  const paymentTerms = detectInvoicePaymentMethod(fullText, explicitPaymentTerms);
   const explicitCurrency = firstMatch("Divisa\\s+([A-Z]{3})", fullText, "i");
   const currency = detectDocumentCurrency(fullText, explicitCurrency);
   const amounts = await normalizeCurrencyAmounts({
@@ -252,6 +318,7 @@ export async function parseTransfer(file) {
     documentDate,
     bank: firstMatch("(INTESA SANPAOLO S\\.P\\.A\\.)", fullText),
     payer: valueOnSameRow(items, "Ragione Sociale:", { valueMinX: 130 }),
+    payerIban: firstMatch("Conto ordinante\\s+(IT\\d{2}[A-Z]\\d{22})", fullText),
     executionDate,
     total,
     currency,
@@ -265,11 +332,13 @@ export async function parseTransfer(file) {
 }
 
 export async function classifyPdf(file) {
+  const ribaEffects = await parseRibaEffects(file);
+  if (ribaEffects.length) return ribaEffects;
   const invoice = await parseInvoice(file);
   const transfer = await parseTransfer(file);
   const invoiceScore = ["supplier", "invoiceNumber", "invoiceDate", "total"].filter((key) => Boolean(invoice[key])).length;
   const transferScore = ["beneficiary", "beneficiaryIban", "reason", "executionDate", "total"].filter((key) => Boolean(transfer[key])).length;
-  return transferScore > invoiceScore ? transfer : invoice;
+  return [transferScore > invoiceScore ? transfer : invoice];
 }
 
 function columnIndex(ref) {
@@ -505,7 +574,10 @@ export async function buildXlsx(records) {
 
 export async function classifyDocuments(files) {
   const parsed = [];
-  for (const file of files) parsed.push({ file, parsed: await classifyPdf(file) });
+  for (const file of files) {
+    const docs = await classifyPdf(file);
+    docs.forEach((parsedDocument) => parsed.push({ file, parsed: parsedDocument }));
+  }
   const invoices = parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
   const transfers = parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
   return { invoices, transfers, matches: pairDocuments(invoices, transfers) };

@@ -128,6 +128,15 @@ function overlapScore(a, b) {
   return { score: 0, overlap: [] };
 }
 
+function normalizePaymentMethod(value = "") {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized.includes("PAYPAL")) return "PAYPAL";
+  if (normalized.includes("CARTA DI CREDITO")) return "CARTA DI CREDITO";
+  if (normalized.includes("RIBA")) return "RIBA";
+  if (normalized.includes("BONIFICO")) return "BONIFICO";
+  return normalized;
+}
+
 export function normalizePaidValue(value) {
   const text = String(value || "").trim().toUpperCase();
   return ["X", "XX", "✅", "SI", "SÌ", "PAGATO", "PAGATA"].includes(text) ? "✅" : "❌";
@@ -205,13 +214,13 @@ function uniqueNonEmpty(values) {
 }
 
 function transferDateLabel(transfer = {}) {
-  return normalizeDate(transfer.executionDate || transfer.documentDate || "");
+  return normalizeDate(transfer.dueDate || transfer.executionDate || transfer.documentDate || "");
 }
 
 function bankAccountLabel(invoice, transfers) {
   const lines = uniqueNonEmpty(transfers.map((transfer) => {
     const bank = cleanText(transfer.bank || "");
-    const iban = cleanText(transfer.beneficiaryIban || "");
+    const iban = cleanText(transfer.payerIban || "");
     if (bank && iban) return `${bank}\n${iban}`;
     return bank || iban;
   }));
@@ -219,10 +228,20 @@ function bankAccountLabel(invoice, transfers) {
 }
 
 function paymentTermsLabel(invoice, transfers) {
+  if (isInstantPaidMethod(invoice.paymentTerms)) {
+    return `${invoice.paymentTerms} in data ${invoice.invoiceDate || ""}`.trim();
+  }
+  const method = normalizePaymentMethod(invoice.paymentTerms || transfers[0]?.paymentType);
   const datedTransfer = transfers.find((transfer) => transferDateLabel(transfer));
+  if (datedTransfer && method === "RIBA") return `RIBA in data ${transferDateLabel(datedTransfer)}`;
   if (datedTransfer) return `Bonifico in data ${transferDateLabel(datedTransfer)}`;
   if (invoice.paymentTerms) return invoice.paymentTerms;
   return "Bonifico";
+}
+
+function isInstantPaidMethod(paymentTerms = "") {
+  const normalized = String(paymentTerms || "").trim().toUpperCase();
+  return normalized === "PAYPAL" || normalized === "CARTA DI CREDITO";
 }
 
 export function recalculateRecord(invoice, transfers, index, matchDebug = null, source = "upload") {
@@ -233,7 +252,9 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
   const taxableUsd = invoice.currency === "USD"
     ? (invoice.taxableUsd ?? decimalFromIt(invoice.taxable) ?? decimalFromIt(invoice.total))
     : null;
-  const paidAmount = safeTransfers.reduce((sum, transfer) => sum + (transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0), 0);
+  const instantPaid = isInstantPaidMethod(invoice.paymentTerms);
+  const transfersPaidAmount = safeTransfers.reduce((sum, transfer) => sum + (transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0), 0);
+  const paidAmount = instantPaid ? (invoiceTotal ?? transfersPaidAmount) : transfersPaidAmount;
   const remainingLabel = outstandingLabel(invoiceTotal, paidAmount);
   const row = normalizeRow({
     "Num.": String(index),
@@ -254,7 +275,7 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
   });
   const checks = [
     { label: "Importo", ok: String(remainingLabel).toUpperCase() === "PAGATO" },
-    { label: "Bonifici associati", ok: safeTransfers.length > 0 },
+    { label: "Pagamento registrato", ok: instantPaid || safeTransfers.length > 0 },
   ];
   return {
     id: crypto.randomUUID(),
@@ -295,6 +316,16 @@ export function matchScore(invoice, transfer) {
   let score = 0;
   const reasons = [];
   const issues = [];
+  const invoiceMethod = normalizePaymentMethod(invoice.paymentTerms);
+  const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
+
+  if (invoiceMethod && transferMethod && invoiceMethod === transferMethod) {
+    score += 20;
+    reasons.push(`Metodo pagamento coerente (${invoiceMethod})`);
+  } else if (transferMethod) {
+    issues.push(`Metodo pagamento diverso (${transferMethod})`);
+  }
+
   const invoiceNumberInReason = Boolean(invoice.invoiceNumber && normalizeKey(transfer.reason || "").includes(normalizeKey(invoice.invoiceNumber)));
   if (invoiceNumberInReason) {
     score += 100;
@@ -321,6 +352,14 @@ export function matchScore(invoice, transfer) {
     issues.push("Importo diverso");
   }
 
+  const dueDateMatches = Boolean(invoice.dueDate && transfer.dueDate && normalizeDate(invoice.dueDate) === normalizeDate(transfer.dueDate));
+  if (dueDateMatches) {
+    score += 40;
+    reasons.push("Scadenza effetto uguale alla scadenza fattura");
+  } else if (invoice.dueDate || transfer.dueDate) {
+    issues.push("Scadenza diversa");
+  }
+
   const supplier = normalizeKey(invoice.supplier || "");
   const beneficiary = normalizeKey(transfer.beneficiary || "");
   const directNameMatch = supplier && beneficiary && (supplier.includes(beneficiary) || beneficiary.includes(supplier));
@@ -340,7 +379,7 @@ export function matchScore(invoice, transfer) {
     reasons,
     issues,
     summary: transfer.beneficiary
-      ? `${transfer.beneficiary} | ${transfer.total || "-"} ${transfer.currency || "EUR"} | ${transfer.executionDate || transfer.documentDate || ""}`.trim()
+      ? `${transfer.beneficiary} | ${transfer.total || "-"} ${transfer.currency || "EUR"} | ${transfer.dueDate || transfer.executionDate || transfer.documentDate || ""}`.trim()
       : "Bonifico non identificato",
   };
 }
@@ -379,7 +418,7 @@ export function pairDocuments(invoices, transfers) {
           reasons: combinedReasons,
           issues: combinedIssues,
           summary: selected.map((entry) =>
-            `${entry.transfer.beneficiary || "-"} | ${entry.transfer.total || "-"} ${entry.transfer.currency || "EUR"} | ${entry.transfer.executionDate || entry.transfer.documentDate || ""}`.trim(),
+            `${entry.transfer.beneficiary || "-"} | ${entry.transfer.total || "-"} ${entry.transfer.currency || "EUR"} | ${entry.transfer.dueDate || entry.transfer.executionDate || entry.transfer.documentDate || ""}`.trim(),
           ).join(" || "),
           matched: true,
           threshold: MATCH_THRESHOLD,

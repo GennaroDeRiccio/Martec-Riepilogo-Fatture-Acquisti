@@ -129,8 +129,8 @@ function invoiceFromRecord(record) {
 
 function displayTransferDate(record) {
   const transfers = normalizeTransfers(record.transfers || record.transfer || []);
-  const dated = transfers.find((transfer) => transfer.executionDate || transfer.documentDate);
-  return dated ? (dated.executionDate || dated.documentDate) : "";
+  const dated = transfers.find((transfer) => transfer.dueDate || transfer.executionDate || transfer.documentDate);
+  return dated ? (dated.dueDate || dated.executionDate || dated.documentDate) : "";
 }
 
 function displayBankCell(record) {
@@ -138,7 +138,7 @@ function displayBankCell(record) {
   if (!transfers.length) return "";
   const pairs = [...new Set(transfers.map((transfer) => {
     const bank = transfer.bank || "";
-    const iban = transfer.beneficiaryIban || "";
+    const iban = transfer.payerIban || "";
     return [bank, iban].filter(Boolean).join("\n");
   }).filter(Boolean))];
   return pairs.join("\n");
@@ -147,6 +147,14 @@ function displayBankCell(record) {
 function displayPaymentTerms(record) {
   const rowValue = record.row?.["Termini pagamento fattura"] || "";
   if (rowValue.toLowerCase().includes(" in data ")) return rowValue;
+  if (/^paypal$/i.test(rowValue) || /^carta di credito$/i.test(rowValue)) {
+    const invoiceDate = record.row?.["Data fattura"] || "";
+    return invoiceDate ? `${rowValue} in data ${invoiceDate}` : rowValue;
+  }
+  if (/^riba$/i.test(rowValue)) {
+    const date = displayTransferDate(record);
+    return date ? `RIBA in data ${date}` : rowValue;
+  }
   const date = displayTransferDate(record);
   if (date) return `Bonifico in data ${date}`;
   return rowValue || "Bonifico";
@@ -156,6 +164,19 @@ function cellValue(record, column) {
   if (column === "BANCA - C/C") return displayBankCell(record);
   if (column === "Termini pagamento fattura") return displayPaymentTerms(record);
   return record.row?.[column] || "";
+}
+
+function transferIdentity(transfer) {
+  return [
+    transfer.fileName || "",
+    transfer.paymentType || "",
+    transfer.noticeNumber || "",
+    transfer.beneficiary || "",
+    transfer.total || "",
+    transfer.dueDate || "",
+    transfer.executionDate || "",
+    transfer.reason || "",
+  ].join("|").toUpperCase();
 }
 
 function filteredRecords() {
@@ -427,8 +448,8 @@ uploadForm.addEventListener("submit", async (event) => {
       return recalculateRecord(nextInvoice, nextTransfers, firstIndex + offset, match, "upload");
     });
     const result = await insertRecords(builtRecords);
-    const matchedTransferNames = new Set(matches.flatMap((entry) => entry.transfers.map((transfer) => transfer.fileName)));
-    const unmatchedTransfers = transfers.filter((transfer) => !matchedTransferNames.has(transfer.fileName));
+    const matchedTransferKeys = new Set(matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))));
+    const unmatchedTransfers = transfers.filter((transfer) => !matchedTransferKeys.has(transferIdentity(transfer)));
     await loadRecords();
     const attached = await attachTransfersToExistingRecords(unmatchedTransfers, uploadsByName);
     uploadForm.reset();
