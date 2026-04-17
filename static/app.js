@@ -134,12 +134,14 @@ function displayTransferDate(record) {
 }
 
 function displayBankCell(record) {
-  const rowValue = record.row?.["BANCA - C/C"] || "";
-  if (rowValue.includes("\n")) return rowValue;
   const transfers = normalizeTransfers(record.transfers || record.transfer || []);
-  const iban = transfers[0]?.beneficiaryIban || record.invoice?.iban || "";
-  if (!rowValue && !iban) return "";
-  return [rowValue, iban].filter(Boolean).join("\n");
+  if (!transfers.length) return "";
+  const pairs = [...new Set(transfers.map((transfer) => {
+    const bank = transfer.bank || "";
+    const iban = transfer.beneficiaryIban || "";
+    return [bank, iban].filter(Boolean).join("\n");
+  }).filter(Boolean))];
+  return pairs.join("\n");
 }
 
 function displayPaymentTerms(record) {

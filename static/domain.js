@@ -211,14 +211,11 @@ function transferDateLabel(transfer = {}) {
 function bankAccountLabel(invoice, transfers) {
   const lines = uniqueNonEmpty(transfers.map((transfer) => {
     const bank = cleanText(transfer.bank || "");
-    const iban = cleanText(transfer.beneficiaryIban || invoice.iban || "");
+    const iban = cleanText(transfer.beneficiaryIban || "");
     if (bank && iban) return `${bank}\n${iban}`;
     return bank || iban;
   }));
-  if (lines.length) return lines.join("\n");
-  const fallbackBank = cleanText(invoice.bank || "");
-  const fallbackIban = cleanText(invoice.iban || "");
-  return [fallbackBank, fallbackIban].filter(Boolean).join("\n");
+  return lines.join("\n");
 }
 
 function paymentTermsLabel(invoice, transfers) {
