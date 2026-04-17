@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Martec Riepilogo Fatture Acquisti</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <img class="brand-logo" src="assets/logo.png" alt="Martec Distribuzione">
+        </div>
+
+        <nav class="side-nav" aria-label="Navigazione principale">
+          <a class="active" href="./index.html">
+            <span class="nav-icon">■</span>
+            Dashboard
+          </a>
+          <a href="./suppliers.html">
+            <span class="nav-icon">□</span>
+            Fornitori
+          </a>
+        </nav>
+      </aside>
+
+      <main class="dashboard">
+        <header class="dashboard-head">
+          <div>
+            <h1>Riepilogo fatture acquisti</h1>
+            <p>Gestione contabile e flussi di cassa</p>
+          </div>
+          <div class="head-actions">
+            <a class="button primary" href="#" id="exportExcelButton">Esporta in Excel</a>
+          </div>
+        </header>
+
+        <section class="cloud-setup hidden" id="cloudSetup" aria-label="Configurazione cloud">
+          <div class="setup-copy">
+            <h2>Connessione cloud</h2>
+            <p>Inserisci URL e chiave pubblica del progetto Supabase per usare il database condiviso online.</p>
+          </div>
+          <div class="setup-controls">
+            <label>
+              <span>Supabase URL</span>
+              <input id="supabaseUrlInput" type="url" placeholder="https://xxxxx.supabase.co">
+            </label>
+            <label>
+              <span>Supabase anon key</span>
+              <input id="supabaseAnonKeyInput" type="text" placeholder="eyJhbGciOi...">
+            </label>
+            <div class="setup-actions">
+              <button class="button primary" id="saveCloudConfigButton" type="button">Salva connessione</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="upload-strip" aria-label="Upload ed esportazione documenti">
+          <form class="operation-card upload-card" id="uploadForm">
+            <div class="operation-copy">
+              <span class="operation-icon red">▣</span>
+              <div>
+                <h2>Estrazione PDF</h2>
+                <p>Carica fatture e bonifici, poi abbina automaticamente importi e fornitori.</p>
+              </div>
+            </div>
+            <div class="operation-controls">
+              <label class="file-drop">
+                <span>PDF fatture e bonifici</span>
+                <strong id="documentsName">Seleziona o trascina i file</strong>
+                <input id="documentsInput" name="documents" type="file" accept="application/pdf" multiple required>
+              </label>
+              <button class="button primary" type="submit">Estrai e abbina</button>
+            </div>
+          </form>
+
+          <form class="operation-card import-card" id="importForm">
+            <div class="operation-copy">
+              <span class="operation-icon blue">▤</span>
+              <div>
+                <h2>Import storico Excel</h2>
+                <p>Importa il riepilogo esistente nel nuovo archivio cloud condiviso.</p>
+              </div>
+            </div>
+            <div class="operation-controls">
+              <label class="file-drop">
+                <span>File storico</span>
+                <strong id="excelName">Carica file .xlsx</strong>
+                <input id="excelInput" name="excel" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+              </label>
+              <button class="button secondary" type="submit">Importa</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="status-strip" id="statusStrip">
+          <div>
+            <span class="metric-label">Righe totali</span>
+            <strong id="rowsCount">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">Totale fatture</span>
+            <strong id="invoiceTotal">€ 0,00</strong>
+          </div>
+          <div>
+            <span class="metric-label">Totale bonifici</span>
+            <strong id="transferTotal">€ 0,00</strong>
+          </div>
+          <div>
+            <span class="metric-label">Da pagare</span>
+            <strong id="issuesCount">0</strong>
+          </div>
+        </section>
+
+        <section class="filters" aria-label="Filtri">
+          <label>
+            <span>Ricerca globale</span>
+            <input id="searchInput" type="search" placeholder="Cerca fornitore, fattura, banca o note">
+          </label>
+          <label>
+            <span>Stato</span>
+            <select id="statusFilter">
+              <option value="">Tutti</option>
+              <option value="ok">Pagate</option>
+              <option value="verify">Da pagare</option>
+            </select>
+          </label>
+          <label>
+            <span>Dal</span>
+            <input id="fromDate" type="date" aria-label="Data da">
+          </label>
+          <label>
+            <span>Al</span>
+            <input id="toDate" type="date" aria-label="Data a">
+          </label>
+        </section>
+
+        <section class="table-shell" aria-label="Tabella riepilogo">
+          <div class="table-scroll">
+            <table id="recordsTable">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

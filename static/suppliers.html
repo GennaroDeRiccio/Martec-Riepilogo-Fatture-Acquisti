@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Archivio fornitori - Martec</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <img class="brand-logo" src="assets/logo.png" alt="Martec Distribuzione">
+        </div>
+
+        <nav class="side-nav" aria-label="Navigazione principale">
+          <a href="./index.html">
+            <span class="nav-icon">■</span>
+            Dashboard
+          </a>
+          <a class="active" href="./suppliers.html">
+            <span class="nav-icon">□</span>
+            Fornitori
+          </a>
+        </nav>
+      </aside>
+
+      <main class="dashboard">
+        <header class="dashboard-head">
+          <div>
+            <h1>Archivio fornitori</h1>
+            <p>Rubrica anagrafica e riferimenti bancari</p>
+          </div>
+        </header>
+
+        <section class="cloud-setup hidden" id="cloudSetup" aria-label="Configurazione cloud">
+          <div class="setup-copy">
+            <h2>Connessione cloud</h2>
+            <p>Inserisci URL e chiave pubblica del progetto Supabase per leggere l'archivio fornitori condiviso.</p>
+          </div>
+          <div class="setup-controls">
+            <label>
+              <span>Supabase URL</span>
+              <input id="supabaseUrlInput" type="url" placeholder="https://xxxxx.supabase.co">
+            </label>
+            <label>
+              <span>Supabase anon key</span>
+              <input id="supabaseAnonKeyInput" type="text" placeholder="eyJhbGciOi...">
+            </label>
+            <div class="setup-actions">
+              <button class="button primary" id="saveCloudConfigButton" type="button">Salva connessione</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="filters" aria-label="Filtri fornitori">
+          <label>
+            <span>Ricerca fornitori</span>
+            <input id="supplierSearchInput" type="search" placeholder="Cerca fornitore, P. IVA, IBAN o banca">
+          </label>
+        </section>
+
+        <section class="suppliers-shell" aria-label="Archivio fornitori">
+          <div class="section-heading">
+            <h2>Fornitori registrati</h2>
+            <span id="suppliersCount">0</span>
+          </div>
+          <div class="table-scroll">
+            <table id="suppliersTable">
+              <thead>
+                <tr>
+                  <th>Fornitore</th>
+                  <th>P. IVA</th>
+                  <th>IBAN</th>
+                  <th>SWIFT</th>
+                  <th>Banca</th>
+                  <th>Valuta</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="config.js"></script>
+    <script type="module" src="suppliers.js"></script>
+  </body>
+</html>

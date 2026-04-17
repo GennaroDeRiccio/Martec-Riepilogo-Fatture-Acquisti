@@ -1,0 +1,66 @@
+[
+  {
+    "id": "ba1fade3-26fc-43f4-8fbb-4e2d43bb9b09",
+    "createdAt": "2026-04-15T14:03:27",
+    "row": {
+      "Num.": "1",
+      "Cliente": "FARNELL ITALIA S.R.L.",
+      "Data": "05/02/2026",
+      "Fattura": "5852546",
+      "Valore in USD": "",
+      "Valore in Euro": "196,00",
+      "Valore": "196,00",
+      "IVA": "43,12",
+      "Totale": "239,12",
+      "Entrate": "239,12",
+      "Delta incasso": "0,00",
+      "Fattura anno 2019 - 2020-2021-2022 - 2023": "05/02/2026",
+      "Scadenza": "31/03/2026",
+      "Incasso avvenuto": "X",
+      "BANCA - C/C": "INTESA SANPAOLO S.P.A.",
+      "Termini pagamento fattura": "Bonifico",
+      "NOTE VARIE": "FATTURA N 5852546",
+      "Ulteriori Note": "",
+      "Cambio": ""
+    },
+    "invoice": {
+      "supplier": "FARNELL ITALIA S.R.L.",
+      "supplierVat": "IT03616040964",
+      "invoiceNumber": "5852546",
+      "invoiceDate": "05/02/2026",
+      "taxable": "196,00",
+      "vat": "43,12",
+      "total": "239,12",
+      "iban": "IT73W0338001600000013946012",
+      "dueDate": "31/03/2026",
+      "paymentTerms": "Bonifico",
+      "rawText": "Cedente/prestatore (fornitore) fornitore) Cessionario/committente (cliente) cliente)\nIdentificativo fiscale ai fini IVA: IT03616040964 Identificativo fiscale ai fini IVA: IT06867540632\nDenominazione: FARNELL ITALIA S.R.L. Denominazione: MARTEC S.R.L.UNIPERSONALE\nRegime fiscale: RF01 (ordinario) ordinario) Indirizzo: VIA PROV.LE DELLE BRECCE 38\nIndirizzo: Via Manzoni 44 Comune: N/A\nComune: 20095 Cusano Milanino (MI) MI) Provincia: MI Cap: 80147 Nazione: IT\nCap: 20095 Nazione: IT\nTipologia documento Art. 73 Numero documento Data documento Codice destinatario\nTD01 (fattura) fattura) 5852546 05-02-2026 M5UXCR1\nCod. articolo Descrizione Quantità Prezzo unitario UM Sconto o magg. %IVA Prezzo totale\nVs.Ord. 48 del 05-02-2026\nDDT 004318254 del 05-02-2026\n------------------------\n3791375 (Codice Codice\nM15570-22-1 STRUM. ESTRATTORE, CONTATTO 100,00 1,96 EA 22,00 196,00\nd'ordine)\n22AWG\nRIEPILOGHI IVA\nesigibilità iva / riferimenti normativi %IVA Spese accessorie Arr. Totale imponibile Totale imposta\n(esigibilità immediata) esigibilità immediata) 22,00 196,00 43,12\nTOTALI\nImporto bollo Bollo Virtuale Sconto/Maggiorazione Arr. Totale documento\n239,12\nDATI TRASPORTO\nDESTINAZIONE MERCE\nIndirizzo Cap Comune Stato\nC.A. SALVATORE GULEMI 80026 VIA VENTOTENE, 20 IT\nModalità pagamento Coordinate Bancarie Istituto Data scadenza Importo\nMP05 Bonifico IBAN BANK OF AMERICA N.A. 31-03-2026 239,12\nIT73W0338001600000013946012\nCopia della fattura elettronica disponibile nella Sua area riservata dell'Agenzia delle Entrate\nPagina 1 di 1"
+    },
+    "transfer": {
+      "documentDate": "07/04/2026",
+      "bank": "INTESA SANPAOLO S.P.A.",
+      "payer": "MARTEC S.R.L. UNIPERSONALE Codice SIA/CUC: E2177/0100253U",
+      "executionDate": "07/04/2026",
+      "total": "239,12",
+      "beneficiary": "FARNELL ITALIA S.R.L.",
+      "beneficiaryIban": "IT73W0338001600000013946012",
+      "swift": "BOFAIT2XXXX",
+      "reason": "FATTURA N 5852546",
+      "rawText": "Pag. 1 di 1\nData: 07.04.2026 INTESA SANPAOLO S.P.A. SA SANPAOLO S.P.A.\nDettaglio Presentazione Bonifico Europeo Unico uropeo Unico\nNome Flusso: W004447883114232600000142 Data/Ora: 07.04.2026 16:48:19\nConto ordinante: IT36G0306914937100000062793-EUR-MARTEC SRL UR-MARTEC SRL C SRL\nRagione Sociale: MARTEC S.R.L. UNIPERSONALE C S.R.L. UNIPERSONALE RSONALE Codice SIA/CUC: E2177/0100253U 2177/0100253U\nCanale: W Stato: Inoltrata\nTipologia: Credit transfer Data esecuzione: 07.04.2026\nTotale: 239,12 EUR UR Num.Disp.: 1\nModalità pagam: TRA - Disposizioni di Bonifico SEPA con Esito a PA con Esito a sito a\nOrdinante\nEsito XML sito XML\nTipo messaggio - Causale Esito: sito: -\nNome Flusso orig - Data Esito: sito: -\nData/ora ult msg -\nMotivazione -\nEsito Disposizione di Pagamento: sito Disposizione di Pagamento:\nC.R.O./Codice di riferimento: - Data Esito: sito: -\nNum.Assegno: - Data Emissione missione -\nData Ordine: - Data di addebito: -\nImp.Commissioni: - Imp.Spese: -\nImp.Penali: -\nStorni e Segnalazioni Ulteriori:\nAnomalia Segnalata: -\nDati Disposizione:\nData creazione 07.04.2026 Importo da trasferire 239,12 EUR UR\nData esecuzione 07.04.2026\nTipo di bonifico Credit Transfer Finalità del pagamento: CASH - Pagamento Generico\nTipo commissioni SLEV - Ognuno paga la sua parte V - Ognuno paga la sua parte Modalità pagamento TRA - Disposizioni di Bonifico\nUrgente NO\nBonifico Istantaneo NO\nBeneficiario FARNELL ITALIA S.R.L. LL ITALIA S.R.L.\nIdentificativo fiscale - LEI I -\nPersona fisica -\nConto beneficiario IT73W0338001600000013946012 Codice SWIFT BOFAIT2XXXX\nTipo codice CBI - Codice -\nDestinatario esito -\nCUC - Sia -\nIdentificativo End to End nd to End nd 47989575E217717755731161610.9193694 217717755731161610.9193694\nAltri Addebiti - Finanziamento - Data scadenza -\nInformazioni aggiuntive (max FATTURA N 5852546\n140 caratteri)"
+    },
+    "checks": [
+      {
+        "label": "Importo",
+        "ok": true
+      },
+      {
+        "label": "IBAN",
+        "ok": true
+      },
+      {
+        "label": "Numero fattura in causale",
+        "ok": true
+      }
+    ]
+  }
+]
