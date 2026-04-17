@@ -108,6 +108,47 @@ export function normalizeKey(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, "");
 }
 
+function alphaPrefix(value = "") {
+  const match = normalizeKey(value).match(/^[A-Z]+/);
+  return match ? match[0] : "";
+}
+
+function normalizeVat(value = "") {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]+/g, "");
+}
+
+function invoiceReferenceVariants(value = "") {
+  const source = String(value || "").toUpperCase();
+  const normalized = normalizeKey(source);
+  const compact = normalized.replace(/^(FT|FAT|FATTURA|DOC|DOCUMENTO|NUMERO)+/, "");
+  const digitRuns = [...source.matchAll(/\d{2,}/g)].map((match) => match[0]);
+  const variants = new Set([normalized, compact]);
+  digitRuns.forEach((digits) => variants.add(digits));
+  if (digitRuns.length >= 2) variants.add(digitRuns.join(""));
+  if (digitRuns.length) variants.add(`${digitRuns[0]}${alphaPrefix(source)}`);
+  return [...variants].filter((entry) => entry && entry.length >= 3);
+}
+
+function reasonReferenceMatch(invoiceNumber = "", transfer = {}) {
+  const reasonText = [
+    transfer.reason,
+    transfer.noticeNumber,
+    transfer.flowName,
+    transfer.rawText,
+  ].filter(Boolean).join(" ");
+  const normalizedReason = normalizeKey(reasonText);
+  if (!invoiceNumber || !normalizedReason) return { matched: false, strong: false, fragment: "" };
+  const variants = invoiceReferenceVariants(invoiceNumber);
+  const fragment = variants.find((variant) => normalizedReason.includes(variant));
+  if (!fragment) return { matched: false, strong: false, fragment: "" };
+  const full = normalizeKey(invoiceNumber);
+  return {
+    matched: true,
+    strong: fragment === full || fragment.length >= Math.max(5, full.length - 2),
+    fragment,
+  };
+}
+
 function normalizedWords(value) {
   const stopwords = new Set(["SRL", "SPA", "S", "RL", "ITALIA", "UNIPERSONALE", "SPA", "SOCIETA", "SOCIET", "LTD"]);
   return String(value || "")
@@ -318,6 +359,8 @@ export function matchScore(invoice, transfer) {
   const issues = [];
   const invoiceMethod = normalizePaymentMethod(invoice.paymentTerms);
   const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
+  const isRibaPair = invoiceMethod === "RIBA" || transferMethod === "RIBA";
+  let anchors = 0;
 
   if (invoiceMethod && transferMethod && invoiceMethod === transferMethod) {
     score += 20;
@@ -326,12 +369,15 @@ export function matchScore(invoice, transfer) {
     issues.push(`Metodo pagamento diverso (${transferMethod})`);
   }
 
-  const invoiceNumberInReason = Boolean(invoice.invoiceNumber && normalizeKey(transfer.reason || "").includes(normalizeKey(invoice.invoiceNumber)));
-  if (invoiceNumberInReason) {
-    score += 100;
-    reasons.push(`Numero fattura trovato in causale (${invoice.invoiceNumber})`);
+  const referenceMatch = reasonReferenceMatch(invoice.invoiceNumber, transfer);
+  if (referenceMatch.matched) {
+    score += referenceMatch.strong ? 120 : 90;
+    anchors += 1;
+    reasons.push(referenceMatch.strong
+      ? `Riferimento documento trovato (${invoice.invoiceNumber})`
+      : `Riferimento compatibile trovato (${referenceMatch.fragment})`);
   } else {
-    issues.push("Numero fattura non trovato nella causale");
+    issues.push(isRibaPair ? "Riferimento fattura non trovato nell'effetto RIBA" : "Numero fattura non trovato nella causale");
   }
 
   const ibanMatches = Boolean(invoice.iban && invoice.iban === transfer.beneficiaryIban);
@@ -347,17 +393,31 @@ export function matchScore(invoice, transfer) {
   const amountsMatch = invoiceTotal !== null && transferTotal !== null && Math.abs(invoiceTotal - transferTotal) < 0.00001;
   if (amountsMatch) {
     score += 40;
+    anchors += 1;
     reasons.push("Importo bonifico uguale al totale fattura");
   } else {
     issues.push("Importo diverso");
+    if (isRibaPair) score -= 25;
   }
 
   const dueDateMatches = Boolean(invoice.dueDate && transfer.dueDate && normalizeDate(invoice.dueDate) === normalizeDate(transfer.dueDate));
   if (dueDateMatches) {
     score += 40;
+    anchors += 1;
     reasons.push("Scadenza effetto uguale alla scadenza fattura");
   } else if (invoice.dueDate || transfer.dueDate) {
     issues.push("Scadenza diversa");
+    if (isRibaPair) score -= 25;
+  }
+
+  const supplierVatMatches = Boolean(invoice.supplierVat && transfer.beneficiaryVat && normalizeVat(invoice.supplierVat) === normalizeVat(transfer.beneficiaryVat));
+  if (supplierVatMatches) {
+    score += 90;
+    anchors += 1;
+    reasons.push("Partita IVA fornitore uguale al creditore RIBA");
+  } else if (invoice.supplierVat && transfer.beneficiaryVat) {
+    issues.push("Partita IVA non coincidente");
+    if (isRibaPair) score -= 35;
   }
 
   const supplier = normalizeKey(invoice.supplier || "");
@@ -366,20 +426,32 @@ export function matchScore(invoice, transfer) {
   const overlap = overlapScore(invoice.supplier || "", transfer.beneficiary || "");
   if (directNameMatch) {
     score += 20;
+    anchors += 1;
     reasons.push("Nome fornitore coerente con beneficiario");
   } else if (overlap.score > 0) {
     score += overlap.score;
     reasons.push(`Nome simile tra fornitore e beneficiario (${overlap.overlap.join(", ")})`);
   } else {
     issues.push("Nome fornitore e beneficiario poco simili");
+    if (isRibaPair) score -= 30;
+  }
+
+  if (isRibaPair) {
+    if (anchors === 0) {
+      score = Math.min(score, 15);
+      issues.push("Effetto RIBA senza segnali forti di collegamento");
+    } else if (anchors === 1 && !referenceMatch.matched && !supplierVatMatches) {
+      score = Math.min(score, 35);
+      issues.push("Effetto RIBA con un solo segnale debole");
+    }
   }
 
   return {
-    score,
+    score: Math.max(0, score),
     reasons,
     issues,
     summary: transfer.beneficiary
-      ? `${transfer.beneficiary} | ${transfer.total || "-"} ${transfer.currency || "EUR"} | ${transfer.dueDate || transfer.executionDate || transfer.documentDate || ""}`.trim()
+      ? `${transfer.beneficiary} | ${transfer.total || "-"} ${transfer.currency || "EUR"} | ${transfer.dueDate || transfer.executionDate || transfer.documentDate || ""}${transfer.noticeNumber ? ` | Avviso ${transfer.noticeNumber}` : ""}`.trim()
       : "Bonifico non identificato",
   };
 }
@@ -387,7 +459,19 @@ export function matchScore(invoice, transfer) {
 export function pairDocuments(invoices, transfers) {
   const pairs = [];
   const used = new Set();
-  for (const invoice of invoices) {
+  const queue = invoices
+    .map((invoice) => {
+      const ranked = transfers
+        .map((transfer, index) => ({ transfer, index, match: matchScore(invoice, transfer) }))
+        .sort((left, right) => right.match.score - left.match.score);
+      const first = ranked[0]?.match.score || 0;
+      const second = ranked[1]?.match.score || 0;
+      return { invoice, ranked, first, second };
+    })
+    .sort((left, right) => right.first - left.first || (right.first - right.second) - (left.first - left.second));
+
+  for (const item of queue) {
+    const { invoice } = item;
     const remainingStart = invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
     const ranked = transfers
       .map((transfer, index) => ({ transfer, index, match: matchScore(invoice, transfer) }))

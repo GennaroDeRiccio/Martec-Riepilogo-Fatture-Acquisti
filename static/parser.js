@@ -21,6 +21,10 @@ const NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const templateCache = { workbook: null, parts: null };
 const fxCache = new Map();
 
+function isFetchFailure(error) {
+  return error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(String(error?.message || error || ""));
+}
+
 function firstMatch(pattern, text, flags = "i") {
   const match = new RegExp(pattern, flags).exec(text);
   return match ? cleanText(match[1]) : "";
@@ -74,7 +78,15 @@ async function fetchUsdEurRate(isoDate) {
   if (fxCache.has(isoDate)) return fxCache.get(isoDate);
   const start = shiftIsoDate(isoDate, -7);
   const url = `https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?startPeriod=${start}&endPeriod=${isoDate}&format=csvdata`;
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    if (isFetchFailure(error)) {
+      throw new Error("Connessione non riuscita mentre leggevo il cambio USD/EUR dalla BCE.");
+    }
+    throw error;
+  }
   if (!response.ok) throw new Error("Impossibile leggere il cambio USD/EUR dalla BCE.");
   const csv = await response.text();
   const rows = csv.trim().split(/\r?\n/);
@@ -444,7 +456,18 @@ function decimalAsExcel(value) {
 
 async function getTemplateParts() {
   if (templateCache.parts) return templateCache.parts;
-  const response = await fetch(new URL("assets/martec-template.xlsx", window.location.href));
+  let response;
+  try {
+    response = await fetch(new URL("assets/martec-template.xlsx", window.location.href));
+  } catch (error) {
+    if (isFetchFailure(error)) {
+      throw new Error("Impossibile caricare il template Excel. Apri la web app da http/https e verifica che il file assets/martec-template.xlsx sia pubblicato.");
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    throw new Error("Template Excel non trovato. Verifica che assets/martec-template.xlsx sia presente nella pubblicazione.");
+  }
   const zip = await JSZip.loadAsync(await response.arrayBuffer());
   const parser = new DOMParser();
   const serializer = new XMLSerializer();

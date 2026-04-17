@@ -17,6 +17,22 @@ const SUPPLIERS_TABLE = "suppliers";
 let client = null;
 let currentConfigKey = "";
 
+function normalizeCloudError(error) {
+  const message = String(error?.message || error || "").trim();
+  if (error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(message)) {
+    return new Error("Connessione cloud non riuscita. Controlla internet, URL/chiave Supabase e apri la web app da http/https.");
+  }
+  return error instanceof Error ? error : new Error(message || "Errore cloud sconosciuto.");
+}
+
+async function withCloudError(task) {
+  try {
+    return await task();
+  } catch (error) {
+    throw normalizeCloudError(error);
+  }
+}
+
 function configFromWindow() {
   return window.APP_CONFIG || {};
 }
@@ -92,15 +108,19 @@ function mapSupplier(row) {
 }
 
 export async function fetchRecords() {
-  const { data, error } = await getSupabase().from(RECORDS_TABLE).select("*").order("created_at", { ascending: true });
-  if (error) throw error;
-  return (data || []).map(mapRecord).sort((a, b) => Number(a.row["Num."] || 0) - Number(b.row["Num."] || 0));
+  return withCloudError(async () => {
+    const { data, error } = await getSupabase().from(RECORDS_TABLE).select("*").order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data || []).map(mapRecord).sort((a, b) => Number(a.row["Num."] || 0) - Number(b.row["Num."] || 0));
+  });
 }
 
 export async function fetchSuppliers() {
-  const { data, error } = await getSupabase().from(SUPPLIERS_TABLE).select("*").order("name", { ascending: true });
-  if (error) throw error;
-  return (data || []).map(mapSupplier);
+  return withCloudError(async () => {
+    const { data, error } = await getSupabase().from(SUPPLIERS_TABLE).select("*").order("name", { ascending: true });
+    if (error) throw error;
+    return (data || []).map(mapSupplier);
+  });
 }
 
 export function nextRecordNumber(records) {
@@ -111,7 +131,7 @@ async function upsertSupplierFromRecord(record) {
   const row = normalizeRow(record.row || {});
   const invoice = record.invoice || {};
   const transfer = normalizeTransfers(record.transfers || record.transfer || [])[0] || {};
-  const name = row.Cliente || invoice.supplier || transfer.beneficiary;
+  const name = row.Fornitore || row.Cliente || invoice.supplier || transfer.beneficiary;
   if (!name) return;
   const payload = {
     name,
@@ -128,63 +148,69 @@ async function upsertSupplierFromRecord(record) {
 }
 
 export async function insertRecords(records) {
-  const added = [];
-  const duplicates = [];
-  for (const record of records) {
-    const normalizedRow = normalizeRow(record.row || {});
-    const payload = {
-      id: record.id,
-      created_at: record.createdAt || new Date().toISOString(),
-      row_data: normalizedRow,
-      invoice_data: record.invoice || {},
-      transfer_data: { transfers: normalizeTransfers(record.transfers || record.transfer || []) },
-      checks_data: record.checks || checksFromRow(normalizedRow),
-      source: record.source || "upload",
-      invoice_key: invoiceKeyFromRow(normalizedRow),
-      status: normalizeStatus(record.status || (String(normalizedRow["Da pagare ancora"] || "").trim().toUpperCase() === "PAGATO" ? STATUS_OK : STATUS_VERIFY)),
-    };
-    const { error } = await getSupabase().from(RECORDS_TABLE).insert(payload);
-    if (error) {
-      if (error.code === "23505") {
-        duplicates.push({ invoice: normalizedRow.Fattura, supplier: normalizedRow.Cliente });
-        continue;
+  return withCloudError(async () => {
+    const added = [];
+    const duplicates = [];
+    for (const record of records) {
+      const normalizedRow = normalizeRow(record.row || {});
+      const payload = {
+        id: record.id,
+        created_at: record.createdAt || new Date().toISOString(),
+        row_data: normalizedRow,
+        invoice_data: record.invoice || {},
+        transfer_data: { transfers: normalizeTransfers(record.transfers || record.transfer || []) },
+        checks_data: record.checks || checksFromRow(normalizedRow),
+        source: record.source || "upload",
+        invoice_key: invoiceKeyFromRow(normalizedRow),
+        status: normalizeStatus(record.status || (String(normalizedRow["Da pagare ancora"] || "").trim().toUpperCase() === "PAGATO" ? STATUS_OK : STATUS_VERIFY)),
+      };
+      const { error } = await getSupabase().from(RECORDS_TABLE).insert(payload);
+      if (error) {
+        if (error.code === "23505") {
+          duplicates.push({ invoice: normalizedRow.Fattura, supplier: normalizedRow.Fornitore || normalizedRow.Cliente });
+          continue;
+        }
+        throw error;
       }
-      throw error;
+      await upsertSupplierFromRecord({ ...record, row: normalizedRow });
+      added.push(payload);
     }
-    await upsertSupplierFromRecord({ ...record, row: normalizedRow });
-    added.push(payload);
-  }
-  return { added, duplicates };
+    return { added, duplicates };
+  });
 }
 
 export async function updateRecord(recordId, nextRow, options = {}) {
-  const normalizedRow = normalizeRow(nextRow);
-  const { data: existing, error: existingError } = await getSupabase()
-    .from(RECORDS_TABLE)
-    .select("*")
-    .eq("id", recordId)
-    .single();
-  if (existingError) throw existingError;
-  const payload = {
-    row_data: normalizedRow,
-    invoice_data: options.invoiceData || existing.invoice_data || {},
-    transfer_data: options.transferData || existing.transfer_data || { transfers: normalizeTransfers(existing.transfer_data || {}) },
-    checks_data: options.checks || checksFromRow(normalizedRow),
-    status: normalizeStatus(options.status || nextRow.Stato || (String(normalizedRow["Da pagare ancora"] || "").trim().toUpperCase() === "PAGATO" ? STATUS_OK : STATUS_VERIFY)),
-    invoice_key: invoiceKeyFromRow(normalizedRow),
-  };
-  const { error } = await getSupabase().from(RECORDS_TABLE).update(payload).eq("id", recordId);
-  if (error) throw error;
-  await upsertSupplierFromRecord({
-    row: normalizedRow,
-    invoice: existing.invoice_data || {},
-    transfers: normalizeTransfers(options.transferData || existing.transfer_data || {}),
+  return withCloudError(async () => {
+    const normalizedRow = normalizeRow(nextRow);
+    const { data: existing, error: existingError } = await getSupabase()
+      .from(RECORDS_TABLE)
+      .select("*")
+      .eq("id", recordId)
+      .single();
+    if (existingError) throw existingError;
+    const payload = {
+      row_data: normalizedRow,
+      invoice_data: options.invoiceData || existing.invoice_data || {},
+      transfer_data: options.transferData || existing.transfer_data || { transfers: normalizeTransfers(existing.transfer_data || {}) },
+      checks_data: options.checks || checksFromRow(normalizedRow),
+      status: normalizeStatus(options.status || nextRow.Stato || (String(normalizedRow["Da pagare ancora"] || "").trim().toUpperCase() === "PAGATO" ? STATUS_OK : STATUS_VERIFY)),
+      invoice_key: invoiceKeyFromRow(normalizedRow),
+    };
+    const { error } = await getSupabase().from(RECORDS_TABLE).update(payload).eq("id", recordId);
+    if (error) throw error;
+    await upsertSupplierFromRecord({
+      row: normalizedRow,
+      invoice: existing.invoice_data || {},
+      transfers: normalizeTransfers(options.transferData || existing.transfer_data || {}),
+    });
   });
 }
 
 export async function deleteRecord(recordId) {
-  const { error } = await getSupabase().from(RECORDS_TABLE).delete().eq("id", recordId);
-  if (error) throw error;
+  return withCloudError(async () => {
+    const { error } = await getSupabase().from(RECORDS_TABLE).delete().eq("id", recordId);
+    if (error) throw error;
+  });
 }
 
 export async function replaceImportedRows(records) {
@@ -192,16 +218,18 @@ export async function replaceImportedRows(records) {
 }
 
 export async function uploadFilesToStorage(files) {
-  const config = getCloudConfig();
-  const batchId = crypto.randomUUID();
-  const uploads = [];
-  for (const file of files) {
-    const path = `${batchId}/${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
-    const { error } = await getSupabase().storage.from(config.storageBucket).upload(path, file, { upsert: false });
-    if (error) throw error;
-    uploads.push({ fileName: file.name, path });
-  }
-  return uploads;
+  return withCloudError(async () => {
+    const config = getCloudConfig();
+    const batchId = crypto.randomUUID();
+    const uploads = [];
+    for (const file of files) {
+      const path = `${batchId}/${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
+      const { error } = await getSupabase().storage.from(config.storageBucket).upload(path, file, { upsert: false });
+      if (error) throw error;
+      uploads.push({ fileName: file.name, path });
+    }
+    return uploads;
+  });
 }
 
 export function subscribeToChanges(onChange) {
