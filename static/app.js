@@ -6,6 +6,7 @@ import {
 } from "./parser.js";
 import {
   MATCH_THRESHOLD,
+  invoiceKeyFromRow,
   matchScore,
   normalizeTransfers,
   recalculateRecord,
@@ -172,11 +173,31 @@ function transferIdentity(transfer) {
     transfer.paymentType || "",
     transfer.noticeNumber || "",
     transfer.beneficiary || "",
-    transfer.total || "",
+    transfer.originalTotal || transfer.total || "",
     transfer.dueDate || "",
     transfer.executionDate || "",
     transfer.reason || "",
   ].join("|").toUpperCase();
+}
+
+function existingTransferKeys(recordsList = records) {
+  return new Set(
+    recordsList.flatMap((record) => normalizeTransfers(record.transfers || record.transfer || []).map((transfer) => transferIdentity(transfer))),
+  );
+}
+
+function existingRecordsByInvoiceKey(recordsList = records) {
+  return new Map(
+    recordsList
+      .map((record) => [invoiceKeyFromRow(record.row || {}), record])
+      .filter(([key]) => Boolean(key)),
+  );
+}
+
+function remainingAmountForRecord(record) {
+  const value = String(record.row?.["Da pagare ancora"] || "").trim();
+  if (!value || value.toUpperCase() === "PAGATO") return 0;
+  return parseAmount(value);
 }
 
 function filteredRecords() {
@@ -354,13 +375,20 @@ async function saveStatus(recordId, status) {
 
 async function attachTransfersToExistingRecords(transfers, uploadsByName) {
   let attached = 0;
+  const knownTransferKeys = existingTransferKeys();
   for (const transfer of transfers) {
+    if (knownTransferKeys.has(transferIdentity(transfer))) continue;
     let bestRecord = null;
     let bestMatch = null;
     for (const record of records) {
       const invoice = invoiceFromRecord(record);
       const match = matchScore(invoice, transfer);
       if (match.score < MATCH_THRESHOLD) continue;
+      const transferAmount = transfer.totalEur ?? parseAmount(transfer.total);
+      const remainingAmount = remainingAmountForRecord(record);
+      const isRiba = String(transfer.paymentType || "").toUpperCase() === "RIBA";
+      if (remainingAmount > 0 && transferAmount > remainingAmount + 0.01 && match.score < 100) continue;
+      if (isRiba && transferAmount > remainingAmount + 0.01 && !String(transfer.reason || "").trim()) continue;
       if (!bestMatch || match.score > bestMatch.score) {
         bestMatch = match;
         bestRecord = record;
@@ -385,6 +413,7 @@ async function attachTransfersToExistingRecords(transfers, uploadsByName) {
       checks: rebuilt.checks,
       status: rebuilt.status,
     });
+    knownTransferKeys.add(transferIdentity(nextTransfer));
     attached += 1;
     await loadRecords();
   }
@@ -438,25 +467,62 @@ uploadForm.addEventListener("submit", async (event) => {
     const uploads = await uploadFilesToStorage(files);
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
     const { matches, transfers } = await classifyDocuments(files);
+    const byInvoiceKey = existingRecordsByInvoiceKey(records);
+    const knownTransferKeys = existingTransferKeys(records);
     const firstIndex = nextRecordNumber(records);
-    const builtRecords = matches.map(({ invoice, transfers: matchedTransfers, match }, offset) => {
+    const builtRecords = [];
+    let offset = 0;
+    let updatedExisting = 0;
+    for (const { invoice, transfers: matchedTransfers, match } of matches) {
       const nextInvoice = invoice ? { ...invoice, storagePath: uploadsByName.get(invoice.fileName) || "" } : invoice;
       const nextTransfers = matchedTransfers.map((transfer) => ({
         ...transfer,
         storagePath: uploadsByName.get(transfer.fileName) || "",
-      }));
-      return recalculateRecord(nextInvoice, nextTransfers, firstIndex + offset, match, "upload");
-    });
+      })).filter((transfer) => !knownTransferKeys.has(transferIdentity(transfer)));
+      const candidate = recalculateRecord(nextInvoice, nextTransfers, firstIndex + offset, match, "upload");
+      const existingRecord = byInvoiceKey.get(candidate.invoiceKey);
+      if (existingRecord) {
+        const currentTransfers = normalizeTransfers(existingRecord.transfers || existingRecord.transfer || []);
+        const mergedTransfers = [
+          ...currentTransfers,
+          ...nextTransfers.filter((transfer) => !currentTransfers.some((current) => transferIdentity(current) === transferIdentity(transfer))),
+        ];
+        if (mergedTransfers.length !== currentTransfers.length) {
+          const rebuilt = recalculateRecord(
+            nextInvoice || invoiceFromRecord(existingRecord),
+            mergedTransfers,
+            Number(existingRecord.row?.["Num."] || 0),
+            match,
+            existingRecord.source || "upload",
+          );
+          await updateRecord(existingRecord.id, rebuilt.row, {
+            invoiceData: rebuilt.invoice,
+            transferData: { transfers: rebuilt.transfers },
+            checks: rebuilt.checks,
+            status: rebuilt.status,
+          });
+          mergedTransfers.forEach((transfer) => knownTransferKeys.add(transferIdentity(transfer)));
+          updatedExisting += 1;
+          await loadRecords();
+        }
+        continue;
+      }
+      nextTransfers.forEach((transfer) => knownTransferKeys.add(transferIdentity(transfer)));
+      builtRecords.push(candidate);
+      offset += 1;
+    }
     const result = await insertRecords(builtRecords);
     const matchedTransferKeys = new Set(matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))));
-    const unmatchedTransfers = transfers.filter((transfer) => !matchedTransferKeys.has(transferIdentity(transfer)));
+    const unmatchedTransfers = transfers.filter((transfer) =>
+      !matchedTransferKeys.has(transferIdentity(transfer)) && !knownTransferKeys.has(transferIdentity(transfer)));
     await loadRecords();
     const attached = await attachTransfersToExistingRecords(unmatchedTransfers, uploadsByName);
     uploadForm.reset();
     updateFileLabels();
     const duplicateText = result.duplicates.length ? `, ${result.duplicates.length} duplicati ignorati` : "";
-    const attachedText = attached ? `, ${attached} bonifici aggiunti a fatture esistenti` : "";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${attachedText}`);
+    const updatedText = updatedExisting ? `, ${updatedExisting} fatture esistenti aggiornate` : "";
+    const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${attachedText}`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {
