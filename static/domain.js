@@ -149,6 +149,63 @@ function reasonReferenceMatch(invoiceNumber = "", transfer = {}) {
   };
 }
 
+function isRibaTransfer(transfer = {}) {
+  return normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method) === "RIBA";
+}
+
+function cloneTransferForInvoice(transfer, invoice, sharedTotal) {
+  const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
+  return {
+    ...transfer,
+    total: decimalToIt(invoiceTotal),
+    totalEur: invoiceTotal,
+    originalTotal: transfer.total,
+    originalTotalEur: transfer.totalEur ?? decimalFromIt(transfer.total),
+    splitInvoices: sharedTotal,
+    splitFromRiba: true,
+    splitInvoiceNumber: invoice.invoiceNumber || "",
+  };
+}
+
+function expandRibaTransfers(invoices, transfers) {
+  const expanded = [];
+  for (const transfer of transfers) {
+    if (!isRibaTransfer(transfer)) {
+      expanded.push(transfer);
+      continue;
+    }
+    const candidates = invoices
+      .map((invoice) => {
+        const match = matchScore(invoice, transfer);
+        const ref = reasonReferenceMatch(invoice.invoiceNumber, transfer);
+        return { invoice, match, ref };
+      })
+      .filter((entry) => entry.ref.matched && entry.match.score >= MATCH_THRESHOLD)
+      .sort((left, right) => right.match.score - left.match.score);
+
+    if (candidates.length < 2) {
+      expanded.push(transfer);
+      continue;
+    }
+
+    const sumTotals = candidates.reduce((sum, entry) => sum + (entry.invoice.totalEur ?? decimalFromIt(entry.invoice.total) ?? 0), 0);
+    const transferTotal = transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0;
+    if (Math.abs(sumTotals - transferTotal) > 0.01) {
+      expanded.push(transfer);
+      continue;
+    }
+
+    const splitInvoices = candidates
+      .map((entry) => entry.invoice.invoiceNumber || "")
+      .filter(Boolean)
+      .join(", ");
+    candidates.forEach((entry) => {
+      expanded.push(cloneTransferForInvoice(transfer, entry.invoice, splitInvoices));
+    });
+  }
+  return expanded;
+}
+
 function normalizedWords(value) {
   const stopwords = new Set(["SRL", "SPA", "S", "RL", "ITALIA", "UNIPERSONALE", "SPA", "SOCIETA", "SOCIET", "LTD"]);
   return String(value || "")
@@ -459,9 +516,10 @@ export function matchScore(invoice, transfer) {
 export function pairDocuments(invoices, transfers) {
   const pairs = [];
   const used = new Set();
+  const effectiveTransfers = expandRibaTransfers(invoices, transfers);
   const queue = invoices
     .map((invoice) => {
-      const ranked = transfers
+      const ranked = effectiveTransfers
         .map((transfer, index) => ({ transfer, index, match: matchScore(invoice, transfer) }))
         .sort((left, right) => right.match.score - left.match.score);
       const first = ranked[0]?.match.score || 0;
@@ -473,7 +531,7 @@ export function pairDocuments(invoices, transfers) {
   for (const item of queue) {
     const { invoice } = item;
     const remainingStart = invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
-    const ranked = transfers
+    const ranked = effectiveTransfers
       .map((transfer, index) => ({ transfer, index, match: matchScore(invoice, transfer) }))
       .filter((entry) => !used.has(entry.index))
       .sort((left, right) => right.match.score - left.match.score);
