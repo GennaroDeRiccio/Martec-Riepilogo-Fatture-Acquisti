@@ -38,8 +38,8 @@
 
         <section class="cloud-setup hidden" id="cloudSetup" aria-label="Configurazione cloud">
           <div class="setup-copy">
-            <h2>Connessione cloud</h2>
-            <p>Inserisci URL e chiave pubblica del progetto Supabase per usare il database condiviso online.</p>
+            <h2>Connessione cloud e AI</h2>
+            <p>Inserisci Supabase per il database condiviso e Gemini per usare l'AI come motore ufficiale di estrazione e matching.</p>
           </div>
           <div class="setup-controls">
             <label>
@@ -50,8 +50,16 @@
               <span>Supabase anon key</span>
               <input id="supabaseAnonKeyInput" type="text" placeholder="eyJhbGciOi...">
             </label>
+            <label>
+              <span>Gemini API key</span>
+              <input id="geminiApiKeyInput" type="password" placeholder="AIzaSy...">
+            </label>
+            <label>
+              <span>Modello Gemini</span>
+              <input id="geminiModelInput" type="text" placeholder="gemini-2.5-flash">
+            </label>
             <div class="setup-actions">
-              <button class="button primary" id="saveCloudConfigButton" type="button">Salva connessione</button>
+              <button class="button primary" id="saveCloudConfigButton" type="button">Salva configurazione</button>
             </div>
           </div>
         </section>

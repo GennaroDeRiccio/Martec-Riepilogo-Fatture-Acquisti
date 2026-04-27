@@ -45,6 +45,8 @@ export function getCloudConfig() {
     supabaseAnonKey: String(config.supabaseAnonKey || "").trim(),
     storageBucket: String(config.storageBucket || "documents").trim(),
     realtimeChannel: String(config.realtimeChannel || "martec-records").trim(),
+    geminiApiKey: String(config.geminiApiKey || "").trim(),
+    geminiModel: String(config.geminiModel || "gemini-2.5-flash").trim(),
   };
 }
 
@@ -57,6 +59,8 @@ export function saveCloudConfig(config) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify({
     supabaseUrl: String(config.supabaseUrl || "").trim(),
     supabaseAnonKey: String(config.supabaseAnonKey || "").trim(),
+    geminiApiKey: String(config.geminiApiKey || "").trim(),
+    geminiModel: String(config.geminiModel || "gemini-2.5-flash").trim(),
   }));
 }
 
@@ -246,6 +250,8 @@ export function showSetupState(elements, visible) {
   elements.cloudSetup?.classList.toggle("hidden", !visible);
   elements.urlInput && (elements.urlInput.value = getCloudConfig().supabaseUrl);
   elements.keyInput && (elements.keyInput.value = getCloudConfig().supabaseAnonKey);
+  elements.geminiKeyInput && (elements.geminiKeyInput.value = getCloudConfig().geminiApiKey);
+  elements.geminiModelInput && (elements.geminiModelInput.value = getCloudConfig().geminiModel);
 }
 
 export function getColumns() {

@@ -20,9 +20,125 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dis
 const NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const templateCache = { workbook: null, parts: null };
 const fxCache = new Map();
+const APP_CONFIG_KEY = "martec-cloud-config";
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+
+const GEMINI_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    documents: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          fileName: { type: "string" },
+          type: { type: "string", enum: ["invoice", "payment"] },
+          paymentType: { type: "string" },
+          supplier: { type: "string" },
+          supplierVat: { type: "string" },
+          invoiceNumber: { type: "string" },
+          invoiceDate: { type: "string" },
+          dueDate: { type: "string" },
+          taxable: { type: "number" },
+          vat: { type: "number" },
+          total: { type: "number" },
+          currency: { type: "string" },
+          bank: { type: "string" },
+          payer: { type: "string" },
+          payerIban: { type: "string" },
+          beneficiary: { type: "string" },
+          beneficiaryVat: { type: "string" },
+          beneficiaryIban: { type: "string" },
+          swift: { type: "string" },
+          documentDate: { type: "string" },
+          executionDate: { type: "string" },
+          reason: { type: "string" },
+          noticeNumber: { type: "string" },
+          flowName: { type: "string" },
+          confidence: { type: "number" },
+          notes: { type: "string" },
+        },
+        required: ["id", "fileName", "type"],
+      },
+    },
+    invoiceMatches: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          invoiceDocumentId: { type: "string" },
+          paymentAllocations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                paymentDocumentId: { type: "string" },
+                allocatedAmount: { type: "number" },
+              },
+              required: ["paymentDocumentId", "allocatedAmount"],
+            },
+          },
+          confidence: { type: "number" },
+          rationale: { type: "string" },
+        },
+        required: ["invoiceDocumentId", "paymentAllocations", "confidence", "rationale"],
+      },
+    },
+    existingRecordMatches: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          recordId: { type: "string" },
+          paymentAllocations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                paymentDocumentId: { type: "string" },
+                allocatedAmount: { type: "number" },
+              },
+              required: ["paymentDocumentId", "allocatedAmount"],
+            },
+          },
+          confidence: { type: "number" },
+          rationale: { type: "string" },
+        },
+        required: ["recordId", "paymentAllocations", "confidence", "rationale"],
+      },
+    },
+    duplicateInvoices: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          invoiceDocumentId: { type: "string" },
+          existingRecordId: { type: "string" },
+          rationale: { type: "string" },
+        },
+        required: ["invoiceDocumentId", "existingRecordId", "rationale"],
+      },
+    },
+  },
+  required: ["documents", "invoiceMatches", "existingRecordMatches", "duplicateInvoices"],
+};
 
 function isFetchFailure(error) {
   return error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(String(error?.message || error || ""));
+}
+
+function configFromWindow() {
+  return window.APP_CONFIG || {};
+}
+
+function getAiConfig() {
+  const stored = JSON.parse(localStorage.getItem(APP_CONFIG_KEY) || "{}");
+  const config = { ...configFromWindow(), ...stored };
+  return {
+    geminiApiKey: String(config.geminiApiKey || "").trim(),
+    geminiModel: String(config.geminiModel || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL,
+  };
 }
 
 function firstMatch(pattern, text, flags = "i") {
@@ -135,6 +251,130 @@ async function normalizeCurrencyAmounts({ currency, date, taxable = "", vat = ""
     totalEur: convert(totalValue),
     totalUsd: totalValue,
   };
+}
+
+function numberToIt(value) {
+  if (value === null || value === undefined || value === "") return "";
+  return decimalToIt(Number(value));
+}
+
+function documentIdForFile(fileName, index) {
+  return `doc_${index + 1}_${String(fileName || "file").replace(/[^\w.-]+/g, "_")}`;
+}
+
+async function fileToBase64(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function existingRecordSummary(records = []) {
+  return records.map((record) => ({
+    recordId: record.id,
+    supplier: record.row?.Fornitore || "",
+    invoiceNumber: record.row?.Fattura || "",
+    invoiceDate: record.row?.["Data fattura"] || "",
+    dueDate: record.row?.Scadenza || "",
+    total: record.row?.Totale || "",
+    outstanding: record.row?.["Da pagare ancora"] || "",
+    paymentTerms: record.row?.["Termini pagamento fattura"] || "",
+    payments: normalizeTransfers(record.transfers || record.transfer || []).map((transfer) => ({
+      paymentType: transfer.paymentType || "",
+      total: transfer.total || "",
+      beneficiary: transfer.beneficiary || "",
+      reason: transfer.reason || "",
+      noticeNumber: transfer.noticeNumber || "",
+      dueDate: transfer.dueDate || "",
+      executionDate: transfer.executionDate || "",
+    })),
+  }));
+}
+
+function geminiPrompt(fileIds, existingRecords) {
+  return `
+Sei il motore ufficiale di estrazione e matching contabile di Martec.
+
+Hai in input PDF di fatture e PDF di pagamenti (bonifici, RIBA, PayPal, carta di credito).
+Devi:
+1. classificare ogni documento o effetto come invoice o payment;
+2. estrarre i campi strutturati;
+3. decidere gli abbinamenti ufficiali;
+4. segnalare le fatture duplicate già presenti in archivio;
+5. usare i record già presenti quando un pagamento del nuovo gruppo si riferisce a una fattura già esistente.
+
+Regole fondamentali:
+- Per i RIBA, il campo più importante è "Riferimento Operazione".
+- Un singolo pagamento può coprire più fatture.
+- Una singola fattura può avere più pagamenti.
+- Se un effetto RIBA contiene riferimenti a più fatture, crea più allocazioni.
+- Non inventare abbinamenti se il riferimento non è abbastanza forte.
+- Considera l'archivio esistente come fonte valida per collegare pagamenti che non trovano la fattura nel batch corrente.
+- Se una fattura caricata è già presente in archivio, non trattarla come nuova: inseriscila in duplicateInvoices.
+- Usa importi numerici senza simboli valuta.
+- Usa date nel formato DD/MM/YYYY quando possibile.
+
+Documenti caricati in questa richiesta:
+${JSON.stringify(fileIds, null, 2)}
+
+Archivio già presente:
+${JSON.stringify(existingRecordSummary(existingRecords), null, 2)}
+
+Restituisci solo JSON conforme allo schema richiesto.
+`;
+}
+
+async function callGeminiMatcher(files, existingRecords = []) {
+  const { geminiApiKey, geminiModel } = getAiConfig();
+  if (!geminiApiKey) return null;
+  const fileIds = files.map((file, index) => ({ fileName: file.name, documentId: documentIdForFile(file.name, index) }));
+  const parts = [];
+  for (const file of files) {
+    parts.push({
+      inline_data: {
+        mime_type: "application/pdf",
+        data: await fileToBase64(file),
+      },
+    });
+  }
+  parts.push({ text: geminiPrompt(fileIds, existingRecords) });
+  let response;
+  try {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{
+            text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido.",
+          }],
+        },
+        contents: [{ role: "user", parts }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: GEMINI_RESPONSE_SCHEMA,
+          temperature: 0.1,
+        },
+      }),
+    });
+  } catch (error) {
+    if (isFetchFailure(error)) {
+      throw new Error("Connessione non riuscita verso Gemini. Controlla la chiave API e che la web app sia aperta da http/https.");
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Gemini non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
+  }
+  const json = await response.json();
+  const text = json?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "";
+  if (!text) throw new Error("Gemini non ha restituito un contenuto utilizzabile.");
+  return { payload: JSON.parse(text), fileIds };
 }
 
 function findTransferAmount(lines, fullText) {
@@ -595,7 +835,141 @@ export async function buildXlsx(records) {
   return zip.generateAsync({ type: "blob" });
 }
 
-export async function classifyDocuments(files) {
+async function normalizeAiDocument(raw) {
+  if (raw.type === "invoice") {
+    const amounts = await normalizeCurrencyAmounts({
+      currency: raw.currency || "EUR",
+      date: normalizeDate(raw.invoiceDate || ""),
+      taxable: numberToIt(raw.taxable),
+      vat: numberToIt(raw.vat),
+      total: numberToIt(raw.total),
+    });
+    return {
+      type: "invoice",
+      aiId: raw.id,
+      fileName: raw.fileName,
+      supplier: cleanText(raw.supplier),
+      supplierVat: cleanText(raw.supplierVat),
+      invoiceNumber: cleanText(raw.invoiceNumber),
+      invoiceDate: normalizeDate(raw.invoiceDate),
+      taxable: numberToIt(raw.taxable),
+      vat: numberToIt(raw.vat),
+      total: numberToIt(raw.total),
+      currency: detectDocumentCurrency("", raw.currency),
+      ...amounts,
+      iban: "",
+      dueDate: normalizeDate(raw.dueDate),
+      paymentTerms: detectInvoicePaymentMethod("", raw.paymentType),
+      rawText: cleanText(raw.notes || ""),
+    };
+  }
+  const amounts = await normalizeCurrencyAmounts({
+    currency: raw.currency || "EUR",
+    date: normalizeDate(raw.executionDate || raw.documentDate || ""),
+    total: numberToIt(raw.total),
+  });
+  return {
+    type: "transfer",
+    aiId: raw.id,
+    fileName: raw.fileName,
+    paymentType: cleanText(raw.paymentType || "Bonifico"),
+    documentDate: normalizeDate(raw.documentDate),
+    executionDate: normalizeDate(raw.executionDate),
+    dueDate: normalizeDate(raw.dueDate),
+    total: numberToIt(raw.total),
+    currency: detectDocumentCurrency("", raw.currency),
+    ...amounts,
+    bank: cleanText(raw.bank),
+    payer: cleanText(raw.payer),
+    payerIban: cleanText(raw.payerIban),
+    beneficiary: cleanText(raw.beneficiary),
+    beneficiaryVat: cleanText(raw.beneficiaryVat),
+    beneficiaryIban: cleanText(raw.beneficiaryIban),
+    swift: cleanText(raw.swift),
+    reason: cleanText(raw.reason),
+    noticeNumber: cleanText(raw.noticeNumber),
+    flowName: cleanText(raw.flowName),
+    rawText: cleanText(raw.notes || ""),
+  };
+}
+
+async function classifyDocumentsWithGemini(files, existingRecords) {
+  const aiResult = await callGeminiMatcher(files, existingRecords);
+  if (!aiResult) return null;
+  const { payload } = aiResult;
+  const normalizedDocs = await Promise.all((payload.documents || []).map((doc) => normalizeAiDocument(doc)));
+  const invoices = normalizedDocs.filter((doc) => doc.type === "invoice");
+  const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
+  const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
+  const transferById = new Map(transfers.map((doc) => [doc.aiId, doc]));
+  const matches = (payload.invoiceMatches || [])
+    .map((entry) => {
+      const invoice = invoiceById.get(entry.invoiceDocumentId);
+      if (!invoice) return null;
+      const matchedTransfers = (entry.paymentAllocations || [])
+        .map((allocation) => {
+          const transfer = transferById.get(allocation.paymentDocumentId);
+          if (!transfer) return null;
+          return {
+            ...transfer,
+            allocatedAmount: allocation.allocatedAmount,
+            total: numberToIt(allocation.allocatedAmount),
+            totalEur: allocation.allocatedAmount,
+            allocationConfidence: entry.confidence,
+          };
+        })
+        .filter(Boolean);
+      return {
+        invoice,
+        transfers: matchedTransfers,
+        match: {
+          score: Math.round(Number(entry.confidence || 0) * 100),
+          threshold: 70,
+          matched: matchedTransfers.length > 0,
+          reasons: [cleanText(entry.rationale)].filter(Boolean),
+          issues: matchedTransfers.length ? [] : ["Gemini non ha trovato un pagamento affidabile"],
+          summary: matchedTransfers.map((transfer) =>
+            `${transfer.beneficiary || "-"} | ${transfer.total || "-"} ${transfer.currency || "EUR"} | ${transfer.dueDate || transfer.executionDate || transfer.documentDate || ""}`.trim(),
+          ).join(" || "),
+        },
+      };
+    })
+    .filter(Boolean);
+  const existingRecordMatches = (payload.existingRecordMatches || []).map((entry) => ({
+    recordId: entry.recordId,
+    confidence: Number(entry.confidence || 0),
+    rationale: cleanText(entry.rationale),
+    transfers: (entry.paymentAllocations || [])
+      .map((allocation) => {
+        const transfer = transferById.get(allocation.paymentDocumentId);
+        if (!transfer) return null;
+        return {
+          ...transfer,
+          allocatedAmount: allocation.allocatedAmount,
+          total: numberToIt(allocation.allocatedAmount),
+          totalEur: allocation.allocatedAmount,
+        };
+      })
+      .filter(Boolean),
+  }));
+  const duplicateInvoices = (payload.duplicateInvoices || []).map((entry) => ({
+    invoiceDocumentId: entry.invoiceDocumentId,
+    existingRecordId: entry.existingRecordId,
+    rationale: cleanText(entry.rationale),
+  }));
+  return {
+    aiUsed: true,
+    invoices,
+    transfers,
+    matches,
+    existingRecordMatches,
+    duplicateInvoices,
+  };
+}
+
+export async function classifyDocuments(files, existingRecords = []) {
+  const aiResult = await classifyDocumentsWithGemini(files, existingRecords);
+  if (aiResult) return aiResult;
   const parsed = [];
   for (const file of files) {
     const docs = await classifyPdf(file);
@@ -603,7 +977,7 @@ export async function classifyDocuments(files) {
   }
   const invoices = parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
   const transfers = parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
-  return { invoices, transfers, matches: pairDocuments(invoices, transfers) };
+  return { aiUsed: false, invoices, transfers, matches: pairDocuments(invoices, transfers), existingRecordMatches: [], duplicateInvoices: [] };
 }
 
 export function recordsFromImportedRows(rows, startingIndex) {

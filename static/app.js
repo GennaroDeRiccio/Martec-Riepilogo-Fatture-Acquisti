@@ -45,6 +45,8 @@ const exportExcelButton = document.querySelector("#exportExcelButton");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
 const supabaseAnonKeyInput = document.querySelector("#supabaseAnonKeyInput");
+const geminiApiKeyInput = document.querySelector("#geminiApiKeyInput");
+const geminiModelInput = document.querySelector("#geminiModelInput");
 const saveCloudConfigButton = document.querySelector("#saveCloudConfigButton");
 
 let columns = getColumns();
@@ -420,6 +422,48 @@ async function attachTransfersToExistingRecords(transfers, uploadsByName) {
   return attached;
 }
 
+async function applyAiExistingMatches(existingRecordMatches, uploadsByName) {
+  let updated = 0;
+  for (const entry of existingRecordMatches) {
+    const record = records.find((item) => item.id === entry.recordId);
+    if (!record || !entry.transfers?.length) continue;
+    const currentTransfers = normalizeTransfers(record.transfers || record.transfer || []);
+    const nextTransfers = [
+      ...currentTransfers,
+      ...entry.transfers
+        .map((transfer) => ({
+          ...transfer,
+          storagePath: uploadsByName.get(transfer.fileName) || transfer.storagePath || "",
+        }))
+        .filter((transfer) => !currentTransfers.some((current) => transferIdentity(current) === transferIdentity(transfer))),
+    ];
+    if (nextTransfers.length === currentTransfers.length) continue;
+    const rebuilt = recalculateRecord(
+      invoiceFromRecord(record),
+      nextTransfers,
+      Number(record.row?.["Num."] || 0),
+      {
+        score: Math.round((entry.confidence || 0) * 100),
+        threshold: 70,
+        matched: true,
+        reasons: [entry.rationale].filter(Boolean),
+        issues: [],
+        summary: nextTransfers.map((transfer) => `${transfer.beneficiary || "-"} | ${transfer.total || "-"} ${transfer.currency || "EUR"}`).join(" || "),
+      },
+      record.source || "upload",
+    );
+    await updateRecord(record.id, rebuilt.row, {
+      invoiceData: rebuilt.invoice,
+      transferData: { transfers: rebuilt.transfers },
+      checks: rebuilt.checks,
+      status: rebuilt.status,
+    });
+    updated += 1;
+    await loadRecords();
+  }
+  return updated;
+}
+
 async function removeRecord(record) {
   const label = [record.row?.Fornitore || record.row?.Cliente, record.row?.Fattura].filter(Boolean).join(" - ") || "questa riga";
   if (!window.confirm(`Vuoi eliminare ${label}?`)) return;
@@ -434,17 +478,35 @@ async function removeRecord(record) {
 
 async function ensureCloudReady() {
   if (isCloudConfigured()) return true;
-  showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, true);
+  showSetupState({
+    cloudSetup,
+    urlInput: supabaseUrlInput,
+    keyInput: supabaseAnonKeyInput,
+    geminiKeyInput: geminiApiKeyInput,
+    geminiModelInput: geminiModelInput,
+  }, true);
   showToast("Configura Supabase per usare il database condiviso.");
   return false;
 }
 
 async function initCloud() {
   if (!isCloudConfigured()) {
-    showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, true);
+    showSetupState({
+      cloudSetup,
+      urlInput: supabaseUrlInput,
+      keyInput: supabaseAnonKeyInput,
+      geminiKeyInput: geminiApiKeyInput,
+      geminiModelInput: geminiModelInput,
+    }, true);
     return;
   }
-  showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, false);
+  showSetupState({
+    cloudSetup,
+    urlInput: supabaseUrlInput,
+    keyInput: supabaseAnonKeyInput,
+    geminiKeyInput: geminiApiKeyInput,
+    geminiModelInput: geminiModelInput,
+  }, false);
   if (unsubscribe) unsubscribe();
   await loadRecords();
   unsubscribe = subscribeToChanges(async (tableName) => {
@@ -466,7 +528,7 @@ uploadForm.addEventListener("submit", async (event) => {
   try {
     const uploads = await uploadFilesToStorage(files);
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
-    const { matches, transfers } = await classifyDocuments(files);
+    const { matches, transfers, existingRecordMatches, duplicateInvoices, aiUsed } = await classifyDocuments(files, records);
     const byInvoiceKey = existingRecordsByInvoiceKey(records);
     const knownTransferKeys = existingTransferKeys(records);
     const firstIndex = nextRecordNumber(records);
@@ -512,17 +574,28 @@ uploadForm.addEventListener("submit", async (event) => {
       offset += 1;
     }
     const result = await insertRecords(builtRecords);
-    const matchedTransferKeys = new Set(matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))));
+    let aiExistingUpdated = 0;
+    if (aiUsed) {
+      await loadRecords();
+      aiExistingUpdated = await applyAiExistingMatches(existingRecordMatches, uploadsByName);
+    }
+    const matchedTransferKeys = new Set([
+      ...matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+      ...(existingRecordMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+    ]);
     const unmatchedTransfers = transfers.filter((transfer) =>
       !matchedTransferKeys.has(transferIdentity(transfer)) && !knownTransferKeys.has(transferIdentity(transfer)));
     await loadRecords();
-    const attached = await attachTransfersToExistingRecords(unmatchedTransfers, uploadsByName);
+    const attached = aiUsed ? 0 : await attachTransfersToExistingRecords(unmatchedTransfers, uploadsByName);
     uploadForm.reset();
     updateFileLabels();
-    const duplicateText = result.duplicates.length ? `, ${result.duplicates.length} duplicati ignorati` : "";
+    const duplicateCount = result.duplicates.length + (duplicateInvoices?.length || 0);
+    const duplicateText = duplicateCount ? `, ${duplicateCount} duplicati ignorati` : "";
     const updatedText = updatedExisting ? `, ${updatedExisting} fatture esistenti aggiornate` : "";
+    const aiUpdatedText = aiExistingUpdated ? `, ${aiExistingUpdated} pagamenti associati a righe già presenti` : "";
     const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${attachedText}`);
+    const modeText = aiUsed ? "Gemini attivo" : "matching locale";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${attachedText} (${modeText})`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {
@@ -576,14 +649,16 @@ exportExcelButton.addEventListener("click", async (event) => {
 saveCloudConfigButton.addEventListener("click", async () => {
   const url = supabaseUrlInput.value.trim();
   const key = supabaseAnonKeyInput.value.trim();
+  const geminiKey = geminiApiKeyInput?.value.trim() || "";
+  const geminiModel = geminiModelInput?.value.trim() || "";
   if (!url || !key) {
     showToast("Inserisci URL e anon key.");
     return;
   }
-  saveCloudConfig({ supabaseUrl: url, supabaseAnonKey: key });
+  saveCloudConfig({ supabaseUrl: url, supabaseAnonKey: key, geminiApiKey: geminiKey, geminiModel });
   resetCloudClient();
   await initCloud();
-  showToast("Connessione cloud salvata");
+  showToast("Configurazione cloud e AI salvata");
 });
 
 for (const element of [documentsInput, excelInput]) element.addEventListener("change", updateFileLabels);
@@ -591,6 +666,12 @@ for (const element of [searchInput, statusFilter, invoiceDateFrom, invoiceDateTo
   element.addEventListener("input", renderTable);
 }
 
-showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, !isCloudConfigured());
+showSetupState({
+  cloudSetup,
+  urlInput: supabaseUrlInput,
+  keyInput: supabaseAnonKeyInput,
+  geminiKeyInput: geminiApiKeyInput,
+  geminiModelInput: geminiModelInput,
+}, !isCloudConfigured());
 updateFileLabels();
 initCloud().catch((error) => showToast(error.message || "Connessione cloud non riuscita"));
