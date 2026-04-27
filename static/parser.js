@@ -995,6 +995,25 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
     existingRecordId: entry.existingRecordId,
     rationale: cleanText(entry.rationale),
   }));
+  const handledInvoiceIds = new Set([
+    ...matches.map((entry) => entry.invoice.aiId),
+    ...duplicateInvoices.map((entry) => entry.invoiceDocumentId),
+  ]);
+  for (const invoice of invoices) {
+    if (handledInvoiceIds.has(invoice.aiId)) continue;
+    matches.push({
+      invoice,
+      transfers: [],
+      match: {
+        score: 0,
+        threshold: 70,
+        matched: false,
+        reasons: [],
+        issues: ["Gemini non ha associato alcun pagamento a questa fattura"],
+        summary: "",
+      },
+    });
+  }
   return {
     aiUsed: true,
     aiModelUsed: aiResult.modelUsed,
