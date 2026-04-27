@@ -22,6 +22,7 @@ const templateCache = { workbook: null, parts: null };
 const fxCache = new Map();
 const APP_CONFIG_KEY = "martec-cloud-config";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
 const GEMINI_RESPONSE_SCHEMA = {
   type: "object",
@@ -139,6 +140,15 @@ function getAiConfig() {
     geminiApiKey: String(config.geminiApiKey || "").trim(),
     geminiModel: String(config.geminiModel || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL,
   };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function shouldFallbackFromGemini(status, text = "") {
+  return [429, 500, 503, 504].includes(Number(status))
+    || /high demand|try again later|overloaded|unavailable|quota/i.test(String(text || ""));
 }
 
 function firstMatch(pattern, text, flags = "i") {
@@ -342,39 +352,62 @@ async function callGeminiMatcher(files, existingRecords = []) {
     });
   }
   parts.push({ text: geminiPrompt(fileIds, existingRecords) });
-  let response;
-  try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{
-            text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido.",
-          }],
-        },
-        contents: [{ role: "user", parts }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: GEMINI_RESPONSE_SCHEMA,
-          temperature: 0.1,
-        },
-      }),
-    });
-  } catch (error) {
-    if (isFetchFailure(error)) {
-      throw new Error("Connessione non riuscita verso Gemini. Controlla la chiave API e che la web app sia aperta da http/https.");
+  const modelsToTry = [...new Set([geminiModel, ...GEMINI_FALLBACK_MODELS])];
+  const requestBody = {
+    system_instruction: {
+      parts: [{
+        text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido.",
+      }],
+    },
+    contents: [{ role: "user", parts }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: GEMINI_RESPONSE_SCHEMA,
+      temperature: 0.1,
+    },
+  };
+  let lastFailure = null;
+  for (const model of modelsToTry) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response;
+      try {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+      } catch (error) {
+        if (isFetchFailure(error)) {
+          throw new Error("Connessione non riuscita verso Gemini. Controlla la chiave API e che la web app sia aperta da http/https.");
+        }
+        throw error;
+      }
+      if (response.ok) {
+        const json = await response.json();
+        const text = json?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "";
+        if (!text) throw new Error("Gemini non ha restituito un contenuto utilizzabile.");
+        return { payload: JSON.parse(text), fileIds, modelUsed: model };
+      }
+      const text = await response.text();
+      lastFailure = { status: response.status, text, model };
+      if (shouldFallbackFromGemini(response.status, text)) {
+        if (attempt === 0) {
+          await sleep(1200);
+          continue;
+        }
+        break;
+      }
+      throw new Error(`Gemini non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
     }
-    throw error;
   }
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Gemini non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
-  }
-  const json = await response.json();
-  const text = json?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "";
-  if (!text) throw new Error("Gemini non ha restituito un contenuto utilizzabile.");
-  return { payload: JSON.parse(text), fileIds };
+  return {
+    payload: null,
+    fileIds,
+    modelUsed: null,
+    fallbackReason: lastFailure
+      ? `Gemini temporaneamente non disponibile (${lastFailure.status}) sul modello ${lastFailure.model}`
+      : "Gemini temporaneamente non disponibile",
+  };
 }
 
 function findTransferAmount(lines, fullText) {
@@ -895,7 +928,11 @@ async function normalizeAiDocument(raw) {
 
 async function classifyDocumentsWithGemini(files, existingRecords) {
   const aiResult = await callGeminiMatcher(files, existingRecords);
-  if (!aiResult) return null;
+  if (!aiResult || !aiResult.payload) {
+    return aiResult?.fallbackReason
+      ? { aiUsed: false, aiFallbackReason: aiResult.fallbackReason }
+      : null;
+  }
   const { payload } = aiResult;
   const normalizedDocs = await Promise.all((payload.documents || []).map((doc) => normalizeAiDocument(doc)));
   const invoices = normalizedDocs.filter((doc) => doc.type === "invoice");
@@ -959,6 +996,7 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
   }));
   return {
     aiUsed: true,
+    aiModelUsed: aiResult.modelUsed,
     invoices,
     transfers,
     matches,
@@ -969,7 +1007,7 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
 
 export async function classifyDocuments(files, existingRecords = []) {
   const aiResult = await classifyDocumentsWithGemini(files, existingRecords);
-  if (aiResult) return aiResult;
+  if (aiResult?.aiUsed) return aiResult;
   const parsed = [];
   for (const file of files) {
     const docs = await classifyPdf(file);
@@ -977,7 +1015,15 @@ export async function classifyDocuments(files, existingRecords = []) {
   }
   const invoices = parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
   const transfers = parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
-  return { aiUsed: false, invoices, transfers, matches: pairDocuments(invoices, transfers), existingRecordMatches: [], duplicateInvoices: [] };
+  return {
+    aiUsed: false,
+    aiFallbackReason: aiResult?.aiFallbackReason || "",
+    invoices,
+    transfers,
+    matches: pairDocuments(invoices, transfers),
+    existingRecordMatches: [],
+    duplicateInvoices: [],
+  };
 }
 
 export function recordsFromImportedRows(rows, startingIndex) {

@@ -528,7 +528,7 @@ uploadForm.addEventListener("submit", async (event) => {
   try {
     const uploads = await uploadFilesToStorage(files);
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
-    const { matches, transfers, existingRecordMatches, duplicateInvoices, aiUsed } = await classifyDocuments(files, records);
+    const { matches, transfers, existingRecordMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records);
     const byInvoiceKey = existingRecordsByInvoiceKey(records);
     const knownTransferKeys = existingTransferKeys(records);
     const firstIndex = nextRecordNumber(records);
@@ -594,8 +594,9 @@ uploadForm.addEventListener("submit", async (event) => {
     const updatedText = updatedExisting ? `, ${updatedExisting} fatture esistenti aggiornate` : "";
     const aiUpdatedText = aiExistingUpdated ? `, ${aiExistingUpdated} pagamenti associati a righe già presenti` : "";
     const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
-    const modeText = aiUsed ? "Gemini attivo" : "matching locale";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${attachedText} (${modeText})`);
+    const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "matching locale";
+    const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, uso fallback locale` : "";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${attachedText} (${modeText})${fallbackText}`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {
