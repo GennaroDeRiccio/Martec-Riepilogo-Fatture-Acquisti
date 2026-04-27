@@ -11,6 +11,7 @@ import {
   exportRowFromRecord,
   normalizeDate,
   normalizeRow,
+  normalizeTransfers,
   pairDocuments,
   recordFromImportedRow,
 } from "./domain.js";
