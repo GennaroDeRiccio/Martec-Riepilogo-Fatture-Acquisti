@@ -23,108 +23,6 @@ const templateCache = { workbook: null, parts: null };
 const fxCache = new Map();
 const APP_CONFIG_KEY = "martec-cloud-config";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
-
-const GEMINI_RESPONSE_SCHEMA = {
-  type: "object",
-  properties: {
-    documents: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          fileName: { type: "string" },
-          type: { type: "string", enum: ["invoice", "payment"] },
-          paymentType: { type: "string" },
-          supplier: { type: "string" },
-          supplierVat: { type: "string" },
-          invoiceNumber: { type: "string" },
-          invoiceDate: { type: "string" },
-          dueDate: { type: "string" },
-          taxable: { type: "number" },
-          vat: { type: "number" },
-          total: { type: "number" },
-          currency: { type: "string" },
-          bank: { type: "string" },
-          payer: { type: "string" },
-          payerIban: { type: "string" },
-          beneficiary: { type: "string" },
-          beneficiaryVat: { type: "string" },
-          beneficiaryIban: { type: "string" },
-          swift: { type: "string" },
-          documentDate: { type: "string" },
-          executionDate: { type: "string" },
-          reason: { type: "string" },
-          noticeNumber: { type: "string" },
-          flowName: { type: "string" },
-          confidence: { type: "number" },
-          notes: { type: "string" },
-        },
-        required: ["id", "fileName", "type"],
-      },
-    },
-    invoiceMatches: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          invoiceDocumentId: { type: "string" },
-          paymentAllocations: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                paymentDocumentId: { type: "string" },
-                allocatedAmount: { type: "number" },
-              },
-              required: ["paymentDocumentId", "allocatedAmount"],
-            },
-          },
-          confidence: { type: "number" },
-          rationale: { type: "string" },
-        },
-        required: ["invoiceDocumentId", "paymentAllocations", "confidence", "rationale"],
-      },
-    },
-    existingRecordMatches: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          recordId: { type: "string" },
-          paymentAllocations: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                paymentDocumentId: { type: "string" },
-                allocatedAmount: { type: "number" },
-              },
-              required: ["paymentDocumentId", "allocatedAmount"],
-            },
-          },
-          confidence: { type: "number" },
-          rationale: { type: "string" },
-        },
-        required: ["recordId", "paymentAllocations", "confidence", "rationale"],
-      },
-    },
-    duplicateInvoices: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          invoiceDocumentId: { type: "string" },
-          existingRecordId: { type: "string" },
-          rationale: { type: "string" },
-        },
-        required: ["invoiceDocumentId", "existingRecordId", "rationale"],
-      },
-    },
-  },
-  required: ["documents", "invoiceMatches", "existingRecordMatches", "duplicateInvoices"],
-};
 
 function isFetchFailure(error) {
   return error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(String(error?.message || error || ""));
@@ -138,7 +36,8 @@ function getAiConfig() {
   const stored = JSON.parse(localStorage.getItem(APP_CONFIG_KEY) || "{}");
   const config = { ...configFromWindow(), ...stored };
   return {
-    geminiApiKey: String(config.geminiApiKey || "").trim(),
+    supabaseUrl: String(config.supabaseUrl || "").trim(),
+    supabaseAnonKey: String(config.supabaseAnonKey || "").trim(),
     geminiModel: String(config.geminiModel || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL,
   };
 }
@@ -150,6 +49,11 @@ function sleep(ms) {
 function shouldFallbackFromGemini(status, text = "") {
   return [429, 500, 503, 504].includes(Number(status))
     || /high demand|try again later|overloaded|unavailable|quota/i.test(String(text || ""));
+}
+
+function geminiPermissionProblem(status, text = "") {
+  return Number(status) === 403
+    && /api key was reported as leaked|permission_denied|api key not valid|forbidden/i.test(String(text || ""));
 }
 
 function firstMatch(pattern, text, flags = "i") {
@@ -340,75 +244,67 @@ Restituisci solo JSON conforme allo schema richiesto.
 }
 
 async function callGeminiMatcher(files, existingRecords = []) {
-  const { geminiApiKey, geminiModel } = getAiConfig();
-  if (!geminiApiKey) return null;
+  const { supabaseUrl, supabaseAnonKey, geminiModel } = getAiConfig();
+  if (!supabaseUrl || !supabaseAnonKey) return null;
   const fileIds = files.map((file, index) => ({ fileName: file.name, documentId: documentIdForFile(file.name, index) }));
-  const parts = [];
-  for (const file of files) {
-    parts.push({
-      inline_data: {
-        mime_type: "application/pdf",
-        data: await fileToBase64(file),
+  const documents = await Promise.all(files.map(async (file, index) => ({
+    id: fileIds[index].documentId,
+    fileName: file.name,
+    mimeType: "application/pdf",
+    data: await fileToBase64(file),
+  })));
+  let response;
+  try {
+    response = await fetch(`${supabaseUrl}/functions/v1/gemini-match`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${supabaseAnonKey}`,
+        apikey: supabaseAnonKey,
       },
+      body: JSON.stringify({
+        model: geminiModel,
+        prompt: geminiPrompt(fileIds, existingRecords),
+        documents,
+      }),
     });
-  }
-  parts.push({ text: geminiPrompt(fileIds, existingRecords) });
-  const modelsToTry = [...new Set([geminiModel, ...GEMINI_FALLBACK_MODELS])];
-  const requestBody = {
-    system_instruction: {
-      parts: [{
-        text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido.",
-      }],
-    },
-    contents: [{ role: "user", parts }],
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: GEMINI_RESPONSE_SCHEMA,
-      temperature: 0.1,
-    },
-  };
-  let lastFailure = null;
-  for (const model of modelsToTry) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      let response;
-      try {
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiApiKey)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        });
-      } catch (error) {
-        if (isFetchFailure(error)) {
-          throw new Error("Connessione non riuscita verso Gemini. Controlla la chiave API e che la web app sia aperta da http/https.");
-        }
-        throw error;
-      }
-      if (response.ok) {
-        const json = await response.json();
-        const text = json?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "";
-        if (!text) throw new Error("Gemini non ha restituito un contenuto utilizzabile.");
-        return { payload: JSON.parse(text), fileIds, modelUsed: model };
-      }
-      const text = await response.text();
-      lastFailure = { status: response.status, text, model };
-      if (shouldFallbackFromGemini(response.status, text)) {
-        if (attempt === 0) {
-          await sleep(1200);
-          continue;
-        }
-        break;
-      }
-      throw new Error(`Gemini non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
+  } catch (error) {
+    if (isFetchFailure(error)) {
+      throw new Error("Connessione non riuscita verso la funzione AI di Supabase. Controlla internet e che la funzione sia pubblicata.");
     }
+    throw error;
   }
-  return {
-    payload: null,
-    fileIds,
-    modelUsed: null,
-    fallbackReason: lastFailure
-      ? `Gemini temporaneamente non disponibile (${lastFailure.status}) sul modello ${lastFailure.model}`
-      : "Gemini temporaneamente non disponibile",
-  };
+  if (response.ok) {
+    const json = await response.json();
+    return { payload: json, fileIds, modelUsed: json.modelUsed || geminiModel };
+  }
+  const text = await response.text();
+  if (geminiPermissionProblem(response.status, text)) {
+    return {
+      payload: null,
+      fileIds,
+      modelUsed: null,
+      fallbackReason: "Gemini disattivato: la chiave server-side e' bloccata o revocata.",
+    };
+  }
+  if (response.status === 404) {
+    return {
+      payload: null,
+      fileIds,
+      modelUsed: null,
+      fallbackReason: "Funzione AI non pubblicata su Supabase",
+    };
+  }
+  if (shouldFallbackFromGemini(response.status, text)) {
+    await sleep(1200);
+    return {
+      payload: null,
+      fileIds,
+      modelUsed: null,
+      fallbackReason: `Gemini temporaneamente non disponibile (${response.status})`,
+    };
+  }
+  throw new Error(`La funzione AI non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
 }
 
 function findTransferAmount(lines, fullText) {

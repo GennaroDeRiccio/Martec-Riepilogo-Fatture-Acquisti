@@ -45,7 +45,6 @@ const exportExcelButton = document.querySelector("#exportExcelButton");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
 const supabaseAnonKeyInput = document.querySelector("#supabaseAnonKeyInput");
-const geminiApiKeyInput = document.querySelector("#geminiApiKeyInput");
 const geminiModelInput = document.querySelector("#geminiModelInput");
 const saveCloudConfigButton = document.querySelector("#saveCloudConfigButton");
 
@@ -482,7 +481,6 @@ async function ensureCloudReady() {
     cloudSetup,
     urlInput: supabaseUrlInput,
     keyInput: supabaseAnonKeyInput,
-    geminiKeyInput: geminiApiKeyInput,
     geminiModelInput: geminiModelInput,
   }, true);
   showToast("Configura Supabase per usare il database condiviso.");
@@ -495,7 +493,6 @@ async function initCloud() {
       cloudSetup,
       urlInput: supabaseUrlInput,
       keyInput: supabaseAnonKeyInput,
-      geminiKeyInput: geminiApiKeyInput,
       geminiModelInput: geminiModelInput,
     }, true);
     return;
@@ -504,7 +501,6 @@ async function initCloud() {
     cloudSetup,
     urlInput: supabaseUrlInput,
     keyInput: supabaseAnonKeyInput,
-    geminiKeyInput: geminiApiKeyInput,
     geminiModelInput: geminiModelInput,
   }, false);
   if (unsubscribe) unsubscribe();
@@ -650,13 +646,12 @@ exportExcelButton.addEventListener("click", async (event) => {
 saveCloudConfigButton.addEventListener("click", async () => {
   const url = supabaseUrlInput.value.trim();
   const key = supabaseAnonKeyInput.value.trim();
-  const geminiKey = geminiApiKeyInput?.value.trim() || "";
   const geminiModel = geminiModelInput?.value.trim() || "";
   if (!url || !key) {
     showToast("Inserisci URL e anon key.");
     return;
   }
-  saveCloudConfig({ supabaseUrl: url, supabaseAnonKey: key, geminiApiKey: geminiKey, geminiModel });
+  saveCloudConfig({ supabaseUrl: url, supabaseAnonKey: key, geminiModel });
   resetCloudClient();
   await initCloud();
   showToast("Configurazione cloud e AI salvata");
@@ -671,7 +666,6 @@ showSetupState({
   cloudSetup,
   urlInput: supabaseUrlInput,
   keyInput: supabaseAnonKeyInput,
-  geminiKeyInput: geminiApiKeyInput,
   geminiModelInput: geminiModelInput,
 }, !isCloudConfigured());
 updateFileLabels();

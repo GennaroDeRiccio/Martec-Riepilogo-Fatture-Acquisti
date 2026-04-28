@@ -39,7 +39,7 @@
         <section class="cloud-setup hidden" id="cloudSetup" aria-label="Configurazione cloud">
           <div class="setup-copy">
             <h2>Connessione cloud e AI</h2>
-            <p>Inserisci Supabase per il database condiviso e Gemini per usare l'AI come motore ufficiale di estrazione e matching.</p>
+            <p>Inserisci Supabase per il database condiviso. Gemini viene eseguito server-side tramite Supabase Edge Function.</p>
           </div>
           <div class="setup-controls">
             <label>
@@ -49,10 +49,6 @@
             <label>
               <span>Supabase anon key</span>
               <input id="supabaseAnonKeyInput" type="text" placeholder="eyJhbGciOi...">
-            </label>
-            <label>
-              <span>Gemini API key</span>
-              <input id="geminiApiKeyInput" type="password" placeholder="AIzaSy...">
             </label>
             <label>
               <span>Modello Gemini</span>

@@ -19,6 +19,7 @@ Soluzione gratuita consigliata e gia preparata nel progetto:
    - tabella `suppliers`
    - bucket `documents`
    - realtime sugli aggiornamenti
+   - Edge Function `gemini-match` per il matching AI server-side
 
 Non serve piu usare SQLite per la versione condivisa online.
 
@@ -44,6 +45,7 @@ Non serve piu usare SQLite per la versione condivisa online.
 - `static/cloud.js`: connessione Supabase
 - `static/domain.js`: regole condivise di normalizzazione e matching
 - `supabase/schema.sql`: schema e policy del database cloud
+- `supabase/functions/gemini-match/index.ts`: funzione server-side che chiama Gemini
 - `.github/workflows/deploy-pages.yml`: deploy automatico su GitHub Pages
 
 ## Setup Supabase
@@ -56,6 +58,17 @@ Non serve piu usare SQLite per la versione condivisa online.
 6. Copia:
    - `Project URL`
    - `anon public key`
+7. Pubblica la Edge Function:
+
+```bash
+supabase functions deploy gemini-match
+```
+
+8. Salva la chiave Gemini nei secrets Supabase:
+
+```bash
+supabase secrets set GEMINI_API_KEY=LA_TUA_CHIAVE
+```
 
 ## Setup GitHub Pages
 
@@ -72,13 +85,15 @@ Quando apri la web app pubblicata:
 2. inserisci:
    - URL Supabase
    - anon key Supabase
+   - opzionalmente il modello Gemini
 3. premi `Salva connessione`
 
 Da quel momento la web app:
 
 - legge e scrive sul database cloud;
 - salva i PDF nel bucket cloud;
-- sincronizza i dati tra utenti.
+- sincronizza i dati tra utenti;
+- invoca Gemini tramite Supabase Edge Function, senza esporre la chiave nel browser.
 
 ## Note importanti
 
