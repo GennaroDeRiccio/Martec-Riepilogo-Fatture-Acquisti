@@ -29,8 +29,21 @@ create table if not exists public.suppliers (
 
 create unique index if not exists suppliers_name_key on public.suppliers (name);
 
+create table if not exists public.pending_payments (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  signature text not null,
+  status text not null default 'pending_invoice',
+  payment_data jsonb not null default '{}'::jsonb,
+  notes text not null default ''
+);
+
+create unique index if not exists pending_payments_signature_key on public.pending_payments (signature);
+create index if not exists pending_payments_created_at_idx on public.pending_payments (created_at);
+
 alter table public.records enable row level security;
 alter table public.suppliers enable row level security;
+alter table public.pending_payments enable row level security;
 
 drop policy if exists "records_select_all" on public.records;
 create policy "records_select_all"
@@ -82,6 +95,35 @@ for update
 to anon, authenticated
 using (true)
 with check (true);
+
+drop policy if exists "pending_payments_select_all" on public.pending_payments;
+create policy "pending_payments_select_all"
+on public.pending_payments
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "pending_payments_insert_all" on public.pending_payments;
+create policy "pending_payments_insert_all"
+on public.pending_payments
+for insert
+to anon, authenticated
+with check (true);
+
+drop policy if exists "pending_payments_update_all" on public.pending_payments;
+create policy "pending_payments_update_all"
+on public.pending_payments
+for update
+to anon, authenticated
+using (true)
+with check (true);
+
+drop policy if exists "pending_payments_delete_all" on public.pending_payments;
+create policy "pending_payments_delete_all"
+on public.pending_payments
+for delete
+to anon, authenticated
+using (true);
 
 insert into storage.buckets (id, name, public)
 values ('documents', 'documents', false)

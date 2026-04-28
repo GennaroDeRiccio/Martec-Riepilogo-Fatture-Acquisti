@@ -92,6 +92,29 @@ const RESPONSE_SCHEMA = {
         required: ["recordId", "paymentAllocations", "confidence", "rationale"],
       },
     },
+    existingPendingPaymentMatches: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          invoiceDocumentId: { type: "string" },
+          pendingAllocations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                pendingSignature: { type: "string" },
+                allocatedAmount: { type: "number" },
+              },
+              required: ["pendingSignature", "allocatedAmount"],
+            },
+          },
+          confidence: { type: "number" },
+          rationale: { type: "string" },
+        },
+        required: ["invoiceDocumentId", "pendingAllocations", "confidence", "rationale"],
+      },
+    },
     duplicateInvoices: {
       type: "array",
       items: {
@@ -105,7 +128,7 @@ const RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["documents", "invoiceMatches", "existingRecordMatches", "duplicateInvoices"],
+  required: ["documents", "invoiceMatches", "existingRecordMatches", "existingPendingPaymentMatches", "duplicateInvoices"],
 };
 
 function shouldFallback(status: number, text = "") {

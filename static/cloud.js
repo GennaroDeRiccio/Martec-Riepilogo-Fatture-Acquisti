@@ -13,6 +13,7 @@ import {
 const CONFIG_KEY = "martec-cloud-config";
 const RECORDS_TABLE = "records";
 const SUPPLIERS_TABLE = "suppliers";
+const PENDING_PAYMENTS_TABLE = "pending_payments";
 
 let client = null;
 let currentConfigKey = "";
@@ -109,6 +110,17 @@ function mapSupplier(row) {
   };
 }
 
+function mapPendingPayment(row) {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    signature: row.signature || "",
+    status: row.status || "pending_invoice",
+    payment: row.payment_data || {},
+    notes: row.notes || "",
+  };
+}
+
 export async function fetchRecords() {
   return withCloudError(async () => {
     const { data, error } = await getSupabase().from(RECORDS_TABLE).select("*").order("created_at", { ascending: true });
@@ -122,6 +134,14 @@ export async function fetchSuppliers() {
     const { data, error } = await getSupabase().from(SUPPLIERS_TABLE).select("*").order("name", { ascending: true });
     if (error) throw error;
     return (data || []).map(mapSupplier);
+  });
+}
+
+export async function fetchPendingPayments() {
+  return withCloudError(async () => {
+    const { data, error } = await getSupabase().from(PENDING_PAYMENTS_TABLE).select("*").order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data || []).map(mapPendingPayment);
   });
 }
 
@@ -215,6 +235,30 @@ export async function deleteRecord(recordId) {
   });
 }
 
+export async function upsertPendingPayments(payments) {
+  return withCloudError(async () => {
+    for (const entry of payments) {
+      const payload = {
+        signature: entry.signature,
+        status: entry.status || "pending_invoice",
+        payment_data: entry.payment || {},
+        notes: entry.notes || "",
+      };
+      const { error } = await getSupabase().from(PENDING_PAYMENTS_TABLE).upsert(payload, { onConflict: "signature" });
+      if (error) throw error;
+    }
+  });
+}
+
+export async function deletePendingPaymentsBySignatures(signatures) {
+  return withCloudError(async () => {
+    const unique = [...new Set((signatures || []).filter(Boolean))];
+    if (!unique.length) return;
+    const { error } = await getSupabase().from(PENDING_PAYMENTS_TABLE).delete().in("signature", unique);
+    if (error) throw error;
+  });
+}
+
 export async function replaceImportedRows(records) {
   return insertRecords(records);
 }
@@ -240,6 +284,7 @@ export function subscribeToChanges(onChange) {
     .channel(`${config.realtimeChannel}-${Date.now()}`)
     .on("postgres_changes", { event: "*", schema: "public", table: RECORDS_TABLE }, () => onChange("records"))
     .on("postgres_changes", { event: "*", schema: "public", table: SUPPLIERS_TABLE }, () => onChange("suppliers"))
+    .on("postgres_changes", { event: "*", schema: "public", table: PENDING_PAYMENTS_TABLE }, () => onChange("pending_payments"))
     .subscribe();
   return () => getSupabase().removeChannel(channel);
 }

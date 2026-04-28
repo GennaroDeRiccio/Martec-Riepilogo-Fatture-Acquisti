@@ -210,7 +210,26 @@ function existingRecordSummary(records = []) {
   }));
 }
 
-function geminiPrompt(fileIds, existingRecords) {
+function existingPendingPaymentSummary(pendingPayments = []) {
+  return pendingPayments.map((entry) => ({
+    signature: entry.signature,
+    status: entry.status,
+    paymentType: entry.payment?.paymentType || "",
+    supplier: entry.payment?.beneficiary || "",
+    total: entry.payment?.total || "",
+    dueDate: entry.payment?.dueDate || "",
+    executionDate: entry.payment?.executionDate || "",
+    documentDate: entry.payment?.documentDate || "",
+    bank: entry.payment?.bank || "",
+    payerIban: entry.payment?.payerIban || "",
+    reason: entry.payment?.reason || "",
+    noticeNumber: entry.payment?.noticeNumber || "",
+    flowName: entry.payment?.flowName || "",
+    notes: entry.notes || "",
+  }));
+}
+
+function geminiPrompt(fileIds, existingRecords, pendingPayments) {
   return `
 Sei il motore ufficiale di estrazione e matching contabile di Martec.
 
@@ -221,6 +240,7 @@ Devi:
 3. decidere gli abbinamenti ufficiali;
 4. segnalare le fatture duplicate già presenti in archivio;
 5. usare i record già presenti quando un pagamento del nuovo gruppo si riferisce a una fattura già esistente.
+6. usare anche i pagamenti gia' in sospeso quando il nuovo upload contiene la fattura corretta.
 
 Regole fondamentali:
 - Per i RIBA, il campo più importante è "Riferimento Operazione".
@@ -229,6 +249,7 @@ Regole fondamentali:
 - Se un effetto RIBA contiene riferimenti a più fatture, crea più allocazioni.
 - Non inventare abbinamenti se il riferimento non è abbastanza forte.
 - Considera l'archivio esistente come fonte valida per collegare pagamenti che non trovano la fattura nel batch corrente.
+- Considera anche i pagamenti gia' memorizzati come "in sospeso": possono essere il vero pagamento di una nuova fattura caricata adesso.
 - Se una fattura caricata è già presente in archivio, non trattarla come nuova: inseriscila in duplicateInvoices.
 - Usa importi numerici senza simboli valuta.
 - Usa date nel formato DD/MM/YYYY quando possibile.
@@ -239,11 +260,14 @@ ${JSON.stringify(fileIds, null, 2)}
 Archivio già presente:
 ${JSON.stringify(existingRecordSummary(existingRecords), null, 2)}
 
+Pagamenti gia' in sospeso:
+${JSON.stringify(existingPendingPaymentSummary(pendingPayments), null, 2)}
+
 Restituisci solo JSON conforme allo schema richiesto.
 `;
 }
 
-async function callGeminiMatcher(files, existingRecords = []) {
+async function callGeminiMatcher(files, existingRecords = [], pendingPayments = []) {
   const { supabaseUrl, supabaseAnonKey, geminiModel } = getAiConfig();
   if (!supabaseUrl || !supabaseAnonKey) return null;
   const fileIds = files.map((file, index) => ({ fileName: file.name, documentId: documentIdForFile(file.name, index) }));
@@ -264,7 +288,7 @@ async function callGeminiMatcher(files, existingRecords = []) {
       },
       body: JSON.stringify({
         model: geminiModel,
-        prompt: geminiPrompt(fileIds, existingRecords),
+        prompt: geminiPrompt(fileIds, existingRecords, pendingPayments),
         documents,
       }),
     });
@@ -823,8 +847,8 @@ async function normalizeAiDocument(raw) {
   };
 }
 
-async function classifyDocumentsWithGemini(files, existingRecords) {
-  const aiResult = await callGeminiMatcher(files, existingRecords);
+async function classifyDocumentsWithGemini(files, existingRecords, pendingPayments) {
+  const aiResult = await callGeminiMatcher(files, existingRecords, pendingPayments);
   if (!aiResult || !aiResult.payload) {
     return aiResult?.fallbackReason
       ? { aiUsed: false, aiFallbackReason: aiResult.fallbackReason }
@@ -836,6 +860,7 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
   const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
   const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
   const transferById = new Map(transfers.map((doc) => [doc.aiId, doc]));
+  const pendingBySignature = new Map((pendingPayments || []).map((entry) => [entry.signature, entry.payment || {}]));
   const matches = (payload.invoiceMatches || [])
     .map((entry) => {
       const invoice = invoiceById.get(entry.invoiceDocumentId);
@@ -886,6 +911,30 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
       })
       .filter(Boolean),
   }));
+  const pendingPaymentMatches = (payload.existingPendingPaymentMatches || [])
+    .map((entry) => {
+      const invoice = invoiceById.get(entry.invoiceDocumentId);
+      if (!invoice) return null;
+      const matchedTransfers = (entry.pendingAllocations || [])
+        .map((allocation) => {
+          const transfer = pendingBySignature.get(allocation.pendingSignature);
+          if (!transfer) return null;
+          return {
+            ...transfer,
+            allocatedAmount: allocation.allocatedAmount,
+            total: numberToIt(allocation.allocatedAmount),
+            totalEur: allocation.allocatedAmount,
+          };
+        })
+        .filter(Boolean);
+      return {
+        invoiceDocumentId: entry.invoiceDocumentId,
+        confidence: Number(entry.confidence || 0),
+        rationale: cleanText(entry.rationale),
+        transfers: matchedTransfers,
+      };
+    })
+    .filter(Boolean);
   const duplicateInvoices = (payload.duplicateInvoices || []).map((entry) => ({
     invoiceDocumentId: entry.invoiceDocumentId,
     existingRecordId: entry.existingRecordId,
@@ -917,12 +966,13 @@ async function classifyDocumentsWithGemini(files, existingRecords) {
     transfers,
     matches,
     existingRecordMatches,
+    pendingPaymentMatches,
     duplicateInvoices,
   };
 }
 
-export async function classifyDocuments(files, existingRecords = []) {
-  const aiResult = await classifyDocumentsWithGemini(files, existingRecords);
+export async function classifyDocuments(files, existingRecords = [], pendingPayments = []) {
+  const aiResult = await classifyDocumentsWithGemini(files, existingRecords, pendingPayments);
   if (aiResult?.aiUsed) return aiResult;
   const parsed = [];
   for (const file of files) {
@@ -930,14 +980,29 @@ export async function classifyDocuments(files, existingRecords = []) {
     docs.forEach((parsedDocument) => parsed.push({ file, parsed: parsedDocument }));
   }
   const invoices = parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
-  const transfers = parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
+  const transfers = [
+    ...parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
+    ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}) })),
+  ];
   return {
     aiUsed: false,
     aiFallbackReason: aiResult?.aiFallbackReason || "",
     invoices,
     transfers,
-    matches: pairDocuments(invoices, transfers),
+    matches: invoices.map((invoice) => ({
+      invoice,
+      transfers: [],
+      match: {
+        score: 0,
+        threshold: 70,
+        matched: false,
+        reasons: [],
+        issues: ["In attesa del matching AI"],
+        summary: "",
+      },
+    })),
     existingRecordMatches: [],
+    pendingPaymentMatches: [],
     duplicateInvoices: [],
   };
 }

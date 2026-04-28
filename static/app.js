@@ -14,6 +14,8 @@ import {
 import {
   deleteRecord,
   fetchRecords,
+  deletePendingPaymentsBySignatures,
+  fetchPendingPayments,
   getColumns,
   insertRecords,
   isCloudConfigured,
@@ -24,6 +26,7 @@ import {
   showSetupState,
   subscribeToChanges,
   updateRecord,
+  upsertPendingPayments,
   uploadFilesToStorage,
 } from "./cloud.js";
 
@@ -51,6 +54,7 @@ const saveCloudConfigButton = document.querySelector("#saveCloudConfigButton");
 
 let columns = getColumns();
 let records = [];
+let pendingPayments = [];
 let unsubscribe = null;
 
 const compactColumns = new Set([
@@ -261,16 +265,35 @@ function matchTooltip(record) {
   return lines.join("\n");
 }
 
+function matchLabel(record) {
+  const debug = record.matchDebug;
+  if (!debug) return { badge: "Nessun controllo", tone: "warn", detail: "Nessun dettaglio disponibile" };
+  if (debug.matched) {
+    return {
+      badge: "Abbinato",
+      tone: "good",
+      detail: debug.summary ? `Pagamento associato: ${debug.summary}` : "Pagamento associato correttamente",
+    };
+  }
+  if (debug.issues?.some((issue) => /nessun pagamento|non ha associato/i.test(issue))) {
+    return {
+      badge: "In attesa",
+      tone: "warn",
+      detail: "Nessun pagamento associato: controlla Pagamenti in sospeso",
+    };
+  }
+  return {
+    badge: "Da verificare",
+    tone: "danger",
+    detail: debug.summary ? `Abbinamento da verificare: ${debug.summary}` : "Abbinamento da verificare manualmente",
+  };
+}
+
 function makeMatchBadge(record) {
   const badge = document.createElement("span");
-  const debug = record.matchDebug;
-  if (!debug) {
-    badge.className = "badge warn";
-    badge.textContent = "Nessun debug";
-    return badge;
-  }
-  badge.className = `badge ${debug.matched ? "good" : "warn"} match-badge`;
-  badge.textContent = debug.matched ? `${debug.score} pt` : `No match (${debug.score})`;
+  const label = matchLabel(record);
+  badge.className = `badge ${label.tone} match-badge`;
+  badge.textContent = label.badge;
   badge.title = matchTooltip(record);
   return badge;
 }
@@ -333,7 +356,7 @@ function renderTable() {
     match.appendChild(makeMatchBadge(record));
     const matchMeta = document.createElement("div");
     matchMeta.className = "match-meta";
-    matchMeta.textContent = record.matchDebug?.summary || "Nessun bonifico proposto";
+    matchMeta.textContent = matchLabel(record).detail;
     match.title = matchTooltip(record);
     match.appendChild(matchMeta);
     row.appendChild(match);
@@ -355,6 +378,10 @@ function renderTable() {
 async function loadRecords() {
   records = await fetchRecords();
   renderTable();
+}
+
+async function loadPendingPayments() {
+  pendingPayments = await fetchPendingPayments();
 }
 
 async function saveCell(recordId, column, value) {
@@ -415,6 +442,7 @@ async function attachTransfersToExistingRecords(transfers, uploadsByName) {
       checks: rebuilt.checks,
       status: rebuilt.status,
     });
+    await deletePendingPaymentsBySignatures([transferIdentity(nextTransfer)]);
     knownTransferKeys.add(transferIdentity(nextTransfer));
     attached += 1;
     await loadRecords();
@@ -458,6 +486,7 @@ async function applyAiExistingMatches(existingRecordMatches, uploadsByName) {
       checks: rebuilt.checks,
       status: rebuilt.status,
     });
+    await deletePendingPaymentsBySignatures(nextTransfers.map((transfer) => transferIdentity(transfer)));
     updated += 1;
     await loadRecords();
   }
@@ -506,8 +535,10 @@ async function initCloud() {
   }, false);
   if (unsubscribe) unsubscribe();
   await loadRecords();
+  await loadPendingPayments();
   unsubscribe = subscribeToChanges(async (tableName) => {
     if (tableName === "records") await loadRecords();
+    if (tableName === "pending_payments") await loadPendingPayments();
   });
 }
 
@@ -525,7 +556,7 @@ uploadForm.addEventListener("submit", async (event) => {
   try {
     const uploads = await uploadFilesToStorage(files);
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
-    const { matches, transfers, existingRecordMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records);
+    const { matches, transfers, existingRecordMatches, pendingPaymentMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records, pendingPayments);
     const byInvoiceKey = existingRecordsByInvoiceKey(records);
     const knownTransferKeys = existingTransferKeys(records);
     const firstIndex = nextRecordNumber(records);
@@ -534,9 +565,11 @@ uploadForm.addEventListener("submit", async (event) => {
     let updatedExisting = 0;
     for (const { invoice, transfers: matchedTransfers, match } of matches) {
       const nextInvoice = invoice ? { ...invoice, storagePath: uploadsByName.get(invoice.fileName) || "" } : invoice;
-      const nextTransfers = matchedTransfers.map((transfer) => ({
+      const pendingMatchedTransfers = (pendingPaymentMatches || [])
+        .find((entry) => entry.invoiceDocumentId === invoice?.aiId)?.transfers || [];
+      const nextTransfers = [...matchedTransfers, ...pendingMatchedTransfers].map((transfer) => ({
         ...transfer,
-        storagePath: uploadsByName.get(transfer.fileName) || "",
+        storagePath: uploadsByName.get(transfer.fileName) || transfer.storagePath || "",
       })).filter((transfer) => !knownTransferKeys.has(transferIdentity(transfer)));
       const candidate = recalculateRecord(nextInvoice, nextTransfers, firstIndex + offset, match, "upload");
       const existingRecord = byInvoiceKey.get(candidate.invoiceKey);
@@ -578,22 +611,41 @@ uploadForm.addEventListener("submit", async (event) => {
     }
     const matchedTransferKeys = new Set([
       ...matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+      ...(pendingPaymentMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
       ...(existingRecordMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
     ]);
     const unmatchedTransfers = transfers.filter((transfer) =>
       !matchedTransferKeys.has(transferIdentity(transfer)) && !knownTransferKeys.has(transferIdentity(transfer)));
+    if (unmatchedTransfers.length) {
+      await upsertPendingPayments(unmatchedTransfers.map((transfer) => ({
+        signature: transferIdentity(transfer),
+        status: String(transfer.paymentType || "").toUpperCase() === "RIBA" ? "pending_invoice" : "uncertain",
+        payment: transfer,
+        notes: String(transfer.paymentType || "").toUpperCase() === "RIBA"
+          ? "Pagamento RIBA in attesa della fattura corretta o di altri documenti collegati"
+          : "Pagamento non ancora associato a una fattura",
+      })));
+    }
+    const matchedSignatures = [
+      ...matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+      ...(pendingPaymentMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+      ...(existingRecordMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
+    ];
+    await deletePendingPaymentsBySignatures(matchedSignatures);
     await loadRecords();
-    const attached = aiUsed ? 0 : await attachTransfersToExistingRecords(unmatchedTransfers, uploadsByName);
+    const attached = 0;
     uploadForm.reset();
     updateFileLabels();
     const duplicateCount = result.duplicates.length + (duplicateInvoices?.length || 0);
     const duplicateText = duplicateCount ? `, ${duplicateCount} duplicati ignorati` : "";
     const updatedText = updatedExisting ? `, ${updatedExisting} fatture esistenti aggiornate` : "";
+    const pendingMatchedCount = (pendingPaymentMatches || []).reduce((sum, entry) => sum + (entry.transfers?.length || 0), 0);
     const aiUpdatedText = aiExistingUpdated ? `, ${aiExistingUpdated} pagamenti associati a righe già presenti` : "";
+    const pendingMatchedText = pendingMatchedCount ? `, ${pendingMatchedCount} pagamenti in sospeso riassociati` : "";
     const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
-    const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "matching locale";
-    const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, uso fallback locale` : "";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${attachedText} (${modeText})${fallbackText}`);
+    const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "AI non disponibile";
+    const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, documenti memorizzati senza abbinamento automatico` : "";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {

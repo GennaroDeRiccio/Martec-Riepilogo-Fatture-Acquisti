@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pagamenti in sospeso - Martec</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <img class="brand-logo" src="assets/logo.png" alt="Martec Distribuzione">
+        </div>
+
+        <nav class="side-nav" aria-label="Navigazione principale">
+          <a href="./index.html">
+            <span class="nav-icon">■</span>
+            Dashboard
+          </a>
+          <a href="./suppliers.html">
+            <span class="nav-icon">□</span>
+            Fornitori
+          </a>
+          <a class="active" href="./pending-payments.html">
+            <span class="nav-icon">▤</span>
+            Pagamenti in sospeso
+          </a>
+        </nav>
+      </aside>
+
+      <main class="dashboard">
+        <header class="dashboard-head">
+          <div>
+            <h1>Pagamenti in sospeso</h1>
+            <p>Movimenti memorizzati ma non ancora associati a una fattura</p>
+          </div>
+          <div class="head-actions">
+            <button class="button secondary" type="button" id="toggleCloudSetupButton">Configurazione</button>
+          </div>
+        </header>
+
+        <section class="cloud-setup hidden" id="cloudSetup" aria-label="Configurazione cloud">
+          <div class="setup-copy">
+            <h2>Connessione cloud e AI</h2>
+            <p>Inserisci Supabase per leggere i pagamenti in sospeso e l'archivio condiviso.</p>
+          </div>
+          <div class="setup-controls">
+            <label>
+              <span>Supabase URL</span>
+              <input id="supabaseUrlInput" type="url" placeholder="https://xxxxx.supabase.co">
+            </label>
+            <label>
+              <span>Supabase anon key</span>
+              <input id="supabaseAnonKeyInput" type="text" placeholder="eyJhbGciOi...">
+            </label>
+            <label>
+              <span>Modello Gemini</span>
+              <input id="geminiModelInput" type="text" placeholder="gemini-2.5-flash">
+            </label>
+            <div class="setup-actions">
+              <button class="button primary" id="saveCloudConfigButton" type="button">Salva configurazione</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="filters" aria-label="Filtri pagamenti in sospeso">
+          <label>
+            <span>Ricerca pagamenti</span>
+            <input id="pendingSearchInput" type="search" placeholder="Cerca fornitore, importo, avviso o riferimento">
+          </label>
+          <label class="filter-status">
+            <span>Stato</span>
+            <select id="pendingStatusFilter">
+              <option value="">Tutti</option>
+              <option value="pending_invoice">In attesa fattura</option>
+              <option value="uncertain">Da verificare</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="suppliers-shell" aria-label="Archivio pagamenti in sospeso">
+          <div class="section-heading">
+            <h2>Pagamenti memorizzati</h2>
+            <span id="pendingCount">0</span>
+          </div>
+          <div class="table-scroll">
+            <table id="pendingPaymentsTable">
+              <thead>
+                <tr>
+                  <th>Stato</th>
+                  <th>Tipo</th>
+                  <th>Fornitore pagato</th>
+                  <th>Importo</th>
+                  <th>Data</th>
+                  <th>Scadenza</th>
+                  <th>Banca / C/C</th>
+                  <th>Riferimento</th>
+                  <th>Avviso</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="config.js"></script>
+    <script type="module" src="pending-payments.js"></script>
+  </body>
+</html>
