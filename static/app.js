@@ -42,6 +42,7 @@ const invoiceDateTo = document.querySelector("#invoiceDateTo");
 const dueDateFrom = document.querySelector("#dueDateFrom");
 const dueDateTo = document.querySelector("#dueDateTo");
 const exportExcelButton = document.querySelector("#exportExcelButton");
+const toggleCloudSetupButton = document.querySelector("#toggleCloudSetupButton");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
 const supabaseAnonKeyInput = document.querySelector("#supabaseAnonKeyInput");
@@ -655,6 +656,16 @@ saveCloudConfigButton.addEventListener("click", async () => {
   resetCloudClient();
   await initCloud();
   showToast("Configurazione cloud e AI salvata");
+});
+
+toggleCloudSetupButton?.addEventListener("click", () => {
+  const isHidden = cloudSetup.classList.contains("hidden");
+  showSetupState({
+    cloudSetup,
+    urlInput: supabaseUrlInput,
+    keyInput: supabaseAnonKeyInput,
+    geminiModelInput: geminiModelInput,
+  }, isHidden);
 });
 
 for (const element of [documentsInput, excelInput]) element.addEventListener("change", updateFileLabels);
