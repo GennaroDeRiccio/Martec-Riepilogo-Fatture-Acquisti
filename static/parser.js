@@ -250,12 +250,64 @@ function invoiceRichness(invoice = {}) {
     invoice.supplierVat,
     invoice.invoiceNumber,
     invoice.invoiceDate,
+    invoice.taxable,
+    invoice.vat,
     invoice.total,
+    invoice.withholding,
     invoice.iban,
     invoice.dueDate,
     invoice.paymentTerms,
     invoice.rawText,
   ].filter(Boolean).join(" ").length;
+}
+
+function mergeInvoiceRecords(base = {}, extra = {}) {
+  const merged = { ...base };
+  const fields = [
+    "supplier",
+    "supplierVat",
+    "invoiceNumber",
+    "invoiceDate",
+    "taxable",
+    "vat",
+    "total",
+    "withholding",
+    "iban",
+    "dueDate",
+    "paymentTerms",
+    "rawText",
+    "currency",
+    "fileName",
+    "aiId",
+    "storagePath",
+  ];
+  for (const field of fields) {
+    if (!cleanText(merged[field] || "") && cleanText(extra[field] || "")) {
+      merged[field] = extra[field];
+    }
+  }
+
+  const numericFields = [
+    "taxableUsd",
+    "taxableEur",
+    "vatEur",
+    "totalEur",
+    "totalUsd",
+    "exchangeRate",
+    "withholdingEur",
+  ];
+  for (const field of numericFields) {
+    if ((merged[field] === null || merged[field] === undefined || merged[field] === "") && (extra[field] !== null && extra[field] !== undefined && extra[field] !== "")) {
+      merged[field] = extra[field];
+    }
+  }
+
+  if (invoiceRichness(extra) > invoiceRichness(merged)) {
+    merged.rawText = extra.rawText || merged.rawText;
+    merged.fileName = extra.fileName || merged.fileName;
+    merged.aiId = extra.aiId || merged.aiId;
+  }
+  return merged;
 }
 
 function dedupeInvoices(invoices = []) {
@@ -267,9 +319,7 @@ function dedupeInvoices(invoices = []) {
       continue;
     }
     const current = byKey.get(key);
-    if (!current || invoiceRichness(invoice) > invoiceRichness(current)) {
-      byKey.set(key, invoice);
-    }
+    byKey.set(key, current ? mergeInvoiceRecords(current, invoice) : invoice);
   }
   return [...byKey.values()];
 }
@@ -485,6 +535,17 @@ function findWithholdingAmount(lines, fullText) {
   return "";
 }
 
+function findVatSummaryAmounts(fullText) {
+  const sectionMatch = fullText.match(/RIEPILOGHI IVA[\s\S]{0,500}?TOTA(LI|LE)/i) || fullText.match(/RIEPILOGHI IVA[\s\S]{0,500}/i);
+  if (!sectionMatch?.[0]) return { taxable: "", vat: "" };
+  const amounts = moneyCandidates(sectionMatch[0]);
+  if (amounts.length < 2) return { taxable: "", vat: "" };
+  return {
+    taxable: amounts[amounts.length - 2] || "",
+    vat: amounts[amounts.length - 1] || "",
+  };
+}
+
 function findTransferCurrency(fullText) {
   const explicit = firstMatch("Totale:?\\s+\\d{1,3}(?:\\.\\d{3})*,\\d{2}\\s+(EUR|USD)", fullText, "i");
   return detectDocumentCurrency(fullText, explicit);
@@ -605,6 +666,11 @@ export async function parseInvoice(file) {
   const withholding = findWithholdingAmount(linesFromItems(items), fullText);
   if (!taxable) taxable = firstMatch("Totale imponibile\\s+Totale imposta.*?\\n.*?\\d+,\\d{2}\\s+(\\d+,\\d{2})\\s+\\d+,\\d{2}", fullText, "is");
   if (!vat) vat = firstMatch("Totale imponibile\\s+Totale imposta.*?\\n.*?\\d+,\\d{2}\\s+\\d+,\\d{2}\\s+(\\d+,\\d{2})", fullText, "is");
+  if (!taxable || !vat) {
+    const summary = findVatSummaryAmounts(fullText);
+    if (!taxable) taxable = summary.taxable;
+    if (!vat) vat = summary.vat;
+  }
   if (!total) total = firstMatch("Totale documento\\s+(\\d+,\\d{2})", fullText, "i");
   const iban = firstMatch("\\b(IT\\d{2}[A-Z]\\d{22})\\b", fullText, "i");
   const dueDate = firstMatch("Data scadenza\\s+Importo.*?\\n.*?(\\d{2}-\\d{2}-\\d{4})", fullText, "is");
