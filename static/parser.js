@@ -268,6 +268,37 @@ function dedupeInvoices(invoices = []) {
   return [...byKey.values()];
 }
 
+function isMeaningfulInvoice(invoice = {}) {
+  return Boolean(
+    cleanText(invoice.supplier)
+    && cleanText(invoice.invoiceNumber)
+    && cleanText(invoice.invoiceDate)
+    && cleanText(invoice.total),
+  );
+}
+
+function isSupportDocumentText(fullText = "") {
+  const text = String(fullText || "").toUpperCase();
+  const supportSignals = [
+    "COORDINATE BANCARIE",
+    "INTESTATO A",
+    "BANCA INTESA SAN PAOLO",
+    "VALORE FROM INNOVATION",
+  ].filter((signal) => text.includes(signal)).length;
+  const invoiceSignals = [
+    "NUMERO DOCUMENTO",
+    "TOTALE DOCUMENTO",
+    "TIPOLOGIA DOCUMENTO",
+  ].filter((signal) => text.includes(signal)).length;
+  const transferSignals = [
+    "BENEFICIARIO",
+    "CONTO BENEFICIARIO",
+    "IMPORTO DA TRASFERIRE",
+    "INFORMAZIONI AGGIUNTIVE",
+  ].filter((signal) => text.includes(signal)).length;
+  return supportSignals >= 2 && invoiceSignals === 0 && transferSignals === 0;
+}
+
 function geminiPrompt(fileIds, existingRecords, pendingPayments) {
   return `
 Sei il motore ufficiale di estrazione e matching contabile di Martec.
@@ -505,6 +536,9 @@ export function linesFromItems(items, tolerance = 1.5) {
 export async function parseInvoice(file) {
   const items = await extractPdfItems(file);
   const fullText = linesFromItems(items).join("\n");
+  if (isSupportDocumentText(fullText)) {
+    return { type: "support", rawText: fullText };
+  }
   const supplier = valueOnSameRow(items, "Denominazione:", { labelMaxX: 80, valueMinX: 70, valueMaxX: 260 });
   const vatIds = [...fullText.matchAll(/Identificativo fiscale ai fini IVA:\s+([A-Z]{2}\d+)/gi)].map((match) => match[1]);
   const supplierVat = vatIds[0] || "";
@@ -552,6 +586,9 @@ export async function parseTransfer(file) {
   const items = await extractPdfItems(file);
   const lines = linesFromItems(items);
   const fullText = lines.join("\n");
+  if (isSupportDocumentText(fullText)) {
+    return { type: "support", rawText: fullText };
+  }
   const total = findTransferAmount(lines, fullText);
   const currency = findTransferCurrency(fullText);
   const executionDate = normalizeDate(firstMatch("Data esecuzione:\\s+(\\d{2}\\.\\d{2}\\.\\d{4})", fullText));
@@ -583,7 +620,9 @@ export async function classifyPdf(file) {
   const ribaEffects = await parseRibaEffects(file);
   if (ribaEffects.length) return ribaEffects;
   const invoice = await parseInvoice(file);
+  if (invoice.type === "support") return [invoice];
   const transfer = await parseTransfer(file);
+  if (transfer.type === "support") return [transfer];
   const invoiceScore = ["supplier", "invoiceNumber", "invoiceDate", "total"].filter((key) => Boolean(invoice[key])).length;
   const transferScore = ["beneficiary", "beneficiaryIban", "reason", "executionDate", "total"].filter((key) => Boolean(transfer[key])).length;
   return [transferScore > invoiceScore ? transfer : invoice];
@@ -906,7 +945,7 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
   }
   const { payload } = aiResult;
   const normalizedDocs = await Promise.all((payload.documents || []).map((doc) => normalizeAiDocument(doc)));
-  const invoices = dedupeInvoices(normalizedDocs.filter((doc) => doc.type === "invoice"));
+  const invoices = dedupeInvoices(normalizedDocs.filter((doc) => doc.type === "invoice" && isMeaningfulInvoice(doc)));
   const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
   const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
   const transferById = new Map(transfers.map((doc) => [doc.aiId, doc]));
@@ -1029,7 +1068,12 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
     const docs = await classifyPdf(file);
     docs.forEach((parsedDocument) => parsed.push({ file, parsed: parsedDocument }));
   }
-  const invoices = dedupeInvoices(parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })));
+  const invoices = dedupeInvoices(
+    parsed
+      .filter((item) => item.parsed.type === "invoice")
+      .map((item) => ({ ...item.parsed, fileName: item.file.name }))
+      .filter((invoice) => isMeaningfulInvoice(invoice)),
+  );
   const transfers = [
     ...parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
     ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}) })),
