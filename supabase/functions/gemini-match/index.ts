@@ -17,7 +17,7 @@ const RESPONSE_SCHEMA = {
         properties: {
           id: { type: "string" },
           fileName: { type: "string" },
-          type: { type: "string", enum: ["invoice", "payment"] },
+          type: { type: "string", enum: ["invoice", "payment", "support"] },
           paymentType: { type: "string" },
           supplier: { type: "string" },
           supplierVat: { type: "string" },
@@ -181,7 +181,7 @@ Deno.serve(async (request) => {
           body: JSON.stringify({
             system_instruction: {
               parts: [{
-                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido.",
+                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido. Se un PDF contiene solo coordinate bancarie, anagrafica fornitore, istruzioni generiche o materiale di supporto, classificane il type come support e non usarlo come fattura o pagamento. Se una fattura contiene note descrittive che citano pagamenti futuri o diversi, dai priorita' ai campi strutturati del documento corrente come modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo.",
               }],
             },
             contents: [{ role: "user", parts }],

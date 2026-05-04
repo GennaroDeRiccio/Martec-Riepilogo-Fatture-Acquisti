@@ -164,6 +164,14 @@
       </main>
     </div>
 
+    <div class="loading-overlay hidden" id="loadingOverlay" aria-live="polite" aria-busy="true">
+      <div class="loading-card" role="status">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <h2 id="loadingTitle">Elaborazione in corso</h2>
+        <p id="loadingDetail">L'AI sta leggendo i documenti e preparando gli abbinamenti.</p>
+      </div>
+    </div>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
     <script type="module" src="app.js"></script>

@@ -229,6 +229,45 @@ function existingPendingPaymentSummary(pendingPayments = []) {
   }));
 }
 
+function invoiceLogicalKey(invoice = {}) {
+  return [
+    cleanText(invoice.supplier || "").toUpperCase(),
+    cleanText(invoice.invoiceNumber || "").toUpperCase(),
+    cleanText(invoice.invoiceDate || "").toUpperCase(),
+    cleanText(invoice.total || "").toUpperCase(),
+  ].join("|");
+}
+
+function invoiceRichness(invoice = {}) {
+  return [
+    invoice.supplier,
+    invoice.supplierVat,
+    invoice.invoiceNumber,
+    invoice.invoiceDate,
+    invoice.total,
+    invoice.iban,
+    invoice.dueDate,
+    invoice.paymentTerms,
+    invoice.rawText,
+  ].filter(Boolean).join(" ").length;
+}
+
+function dedupeInvoices(invoices = []) {
+  const byKey = new Map();
+  for (const invoice of invoices) {
+    const key = invoiceLogicalKey(invoice);
+    if (!key.replace(/\|/g, "")) {
+      byKey.set(`${crypto.randomUUID()}`, invoice);
+      continue;
+    }
+    const current = byKey.get(key);
+    if (!current || invoiceRichness(invoice) > invoiceRichness(current)) {
+      byKey.set(key, invoice);
+    }
+  }
+  return [...byKey.values()];
+}
+
 function geminiPrompt(fileIds, existingRecords, pendingPayments) {
   return `
 Sei il motore ufficiale di estrazione e matching contabile di Martec.
@@ -251,6 +290,9 @@ Regole fondamentali:
 - Considera l'archivio esistente come fonte valida per collegare pagamenti che non trovano la fattura nel batch corrente.
 - Considera anche i pagamenti gia' memorizzati come "in sospeso": possono essere il vero pagamento di una nuova fattura caricata adesso.
 - Se una fattura caricata è già presente in archivio, non trattarla come nuova: inseriscila in duplicateInvoices.
+- Se un documento contiene solo coordinate bancarie, anagrafica fornitore, loghi, istruzioni o altri dati di supporto senza essere una vera fattura o un vero pagamento, classificane il type come "support" e non usarlo per il matching.
+- Se nello stesso upload trovi due versioni della stessa fattura (ad esempio XML PDF e copia di cortesia con stesso fornitore, numero, data e totale), considera una sola fattura logica.
+- Se una fattura contiene note commerciali o causali narrative che citano pagamenti futuri (ad esempio RIBA o saldi successivi), dai priorita' ai campi strutturati del documento corrente come Modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo.
 - Usa importi numerici senza simboli valuta.
 - Usa date nel formato DD/MM/YYYY quando possibile.
 
@@ -790,6 +832,14 @@ export async function buildXlsx(records) {
 }
 
 async function normalizeAiDocument(raw) {
+  if (raw.type === "support") {
+    return {
+      type: "support",
+      aiId: raw.id,
+      fileName: raw.fileName,
+      rawText: cleanText(raw.notes || ""),
+    };
+  }
   if (raw.type === "invoice") {
     const amounts = await normalizeCurrencyAmounts({
       currency: raw.currency || "EUR",
@@ -856,7 +906,7 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
   }
   const { payload } = aiResult;
   const normalizedDocs = await Promise.all((payload.documents || []).map((doc) => normalizeAiDocument(doc)));
-  const invoices = normalizedDocs.filter((doc) => doc.type === "invoice");
+  const invoices = dedupeInvoices(normalizedDocs.filter((doc) => doc.type === "invoice"));
   const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
   const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
   const transferById = new Map(transfers.map((doc) => [doc.aiId, doc]));
@@ -979,7 +1029,7 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
     const docs = await classifyPdf(file);
     docs.forEach((parsedDocument) => parsed.push({ file, parsed: parsedDocument }));
   }
-  const invoices = parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name }));
+  const invoices = dedupeInvoices(parsed.filter((item) => item.parsed.type !== "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })));
   const transfers = [
     ...parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
     ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}) })),

@@ -38,6 +38,9 @@ const excelInput = document.querySelector("#excelInput");
 const documentsName = document.querySelector("#documentsName");
 const excelName = document.querySelector("#excelName");
 const toast = document.querySelector("#toast");
+const loadingOverlay = document.querySelector("#loadingOverlay");
+const loadingTitle = document.querySelector("#loadingTitle");
+const loadingDetail = document.querySelector("#loadingDetail");
 const searchInput = document.querySelector("#searchInput");
 const statusFilter = document.querySelector("#statusFilter");
 const invoiceDateFrom = document.querySelector("#invoiceDateFrom");
@@ -87,6 +90,12 @@ function showToast(message) {
   toast.classList.add("visible");
   clearTimeout(showToast.timeout);
   showToast.timeout = setTimeout(() => toast.classList.remove("visible"), 3600);
+}
+
+function setLoadingState(visible, title = "Elaborazione in corso", detail = "L'AI sta leggendo i documenti e preparando gli abbinamenti.") {
+  loadingTitle && (loadingTitle.textContent = title);
+  loadingDetail && (loadingDetail.textContent = detail);
+  loadingOverlay?.classList.toggle("hidden", !visible);
 }
 
 function parseAmount(value) {
@@ -553,11 +562,14 @@ uploadForm.addEventListener("submit", async (event) => {
   const submitButton = uploadForm.querySelector("button[type='submit']");
   submitButton.disabled = true;
   submitButton.textContent = "Estrazione...";
+  setLoadingState(true, "Elaborazione documenti", "Sto caricando i file e preparando l'analisi AI.");
   try {
     const uploads = await uploadFilesToStorage(files);
+    setLoadingState(true, "Analisi AI in corso", "L'AI sta leggendo fatture e pagamenti per estrarre i dati e costruire gli abbinamenti.");
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
     const { matches, transfers, existingRecordMatches, pendingPaymentMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records, pendingPayments);
     const byInvoiceKey = existingRecordsByInvoiceKey(records);
+    const currentUploadInvoiceKeys = new Set();
     const knownTransferKeys = existingTransferKeys(records);
     const firstIndex = nextRecordNumber(records);
     const builtRecords = [];
@@ -572,6 +584,7 @@ uploadForm.addEventListener("submit", async (event) => {
         storagePath: uploadsByName.get(transfer.fileName) || transfer.storagePath || "",
       })).filter((transfer) => !knownTransferKeys.has(transferIdentity(transfer)));
       const candidate = recalculateRecord(nextInvoice, nextTransfers, firstIndex + offset, match, "upload");
+      if (currentUploadInvoiceKeys.has(candidate.invoiceKey)) continue;
       const existingRecord = byInvoiceKey.get(candidate.invoiceKey);
       if (existingRecord) {
         const currentTransfers = normalizeTransfers(existingRecord.transfers || existingRecord.transfer || []);
@@ -601,11 +614,13 @@ uploadForm.addEventListener("submit", async (event) => {
       }
       nextTransfers.forEach((transfer) => knownTransferKeys.add(transferIdentity(transfer)));
       builtRecords.push(candidate);
+      currentUploadInvoiceKeys.add(candidate.invoiceKey);
       offset += 1;
     }
     const result = await insertRecords(builtRecords);
     let aiExistingUpdated = 0;
     if (aiUsed) {
+      setLoadingState(true, "Aggiornamento archivio", "Sto applicando gli abbinamenti trovati dall'AI e aggiornando l'archivio condiviso.");
       await loadRecords();
       aiExistingUpdated = await applyAiExistingMatches(existingRecordMatches, uploadsByName);
     }
@@ -649,6 +664,7 @@ uploadForm.addEventListener("submit", async (event) => {
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {
+    setLoadingState(false);
     submitButton.disabled = false;
     submitButton.textContent = "Estrai e abbina";
   }
