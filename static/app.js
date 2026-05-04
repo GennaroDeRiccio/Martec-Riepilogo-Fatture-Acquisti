@@ -209,6 +209,19 @@ function existingRecordsByInvoiceKey(recordsList = records) {
   );
 }
 
+function stableStringify(value) {
+  return JSON.stringify(value, Object.keys(value || {}).sort());
+}
+
+function recordNeedsRefresh(existingRecord, rebuilt) {
+  const rowChanged = stableStringify(existingRecord.row || {}) !== stableStringify(rebuilt.row || {});
+  const invoiceChanged = stableStringify(existingRecord.invoice || {}) !== stableStringify(rebuilt.invoice || {});
+  const statusChanged = String(existingRecord.status || "") !== String(rebuilt.status || "");
+  const transfersChanged = stableStringify(normalizeTransfers(existingRecord.transfers || existingRecord.transfer || []))
+    !== stableStringify(rebuilt.transfers || []);
+  return rowChanged || invoiceChanged || statusChanged || transfersChanged;
+}
+
 function remainingAmountForRecord(record) {
   const value = String(record.row?.["Da pagare ancora"] || "").trim();
   if (!value || value.toUpperCase() === "PAGATO") return 0;
@@ -592,14 +605,14 @@ uploadForm.addEventListener("submit", async (event) => {
           ...currentTransfers,
           ...nextTransfers.filter((transfer) => !currentTransfers.some((current) => transferIdentity(current) === transferIdentity(transfer))),
         ];
-        if (mergedTransfers.length !== currentTransfers.length) {
-          const rebuilt = recalculateRecord(
-            nextInvoice || invoiceFromRecord(existingRecord),
-            mergedTransfers,
-            Number(existingRecord.row?.["Num."] || 0),
-            match,
-            existingRecord.source || "upload",
-          );
+        const rebuilt = recalculateRecord(
+          nextInvoice || invoiceFromRecord(existingRecord),
+          mergedTransfers,
+          Number(existingRecord.row?.["Num."] || 0),
+          match,
+          existingRecord.source || "upload",
+        );
+        if (recordNeedsRefresh(existingRecord, rebuilt)) {
           await updateRecord(existingRecord.id, rebuilt.row, {
             invoiceData: rebuilt.invoice,
             transferData: { transfers: rebuilt.transfers },

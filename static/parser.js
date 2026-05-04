@@ -472,8 +472,11 @@ function findTransferAmount(lines, fullText) {
 }
 
 function findWithholdingAmount(lines, fullText) {
-  const blockMatch = fullText.match(/Dati ritenuta d['’]acconto[\s\S]{0,300}?RT\d{2}[\s\S]{0,200}?(\d{1,3}(?:\.\d{3})*,\d{2})/i);
-  if (blockMatch?.[1]) return cleanText(blockMatch[1]);
+  const blockMatch = fullText.match(/Dati ritenuta d['’]acconto[\s\S]{0,400}?RT\d{2}[\s\S]{0,250}/i);
+  if (blockMatch?.[0]) {
+    const amounts = moneyCandidates(blockMatch[0]);
+    if (amounts.length) return amounts[amounts.length - 1];
+  }
   const line = lines.find((entry) => /RT\d{2}.*Ritenuta/i.test(entry));
   if (line) {
     const amounts = moneyCandidates(line);
@@ -991,6 +994,53 @@ async function normalizeAiDocument(raw) {
   };
 }
 
+function preferValue(primary, fallback) {
+  return cleanText(primary || "") ? primary : fallback;
+}
+
+function enrichInvoiceWithLocal(aiInvoice, localInvoice) {
+  if (!localInvoice || localInvoice.type !== "invoice") return aiInvoice;
+  const withholding = preferValue(aiInvoice.withholding, localInvoice.withholding);
+  return {
+    ...aiInvoice,
+    supplier: preferValue(aiInvoice.supplier, localInvoice.supplier),
+    supplierVat: preferValue(aiInvoice.supplierVat, localInvoice.supplierVat),
+    invoiceNumber: preferValue(aiInvoice.invoiceNumber, localInvoice.invoiceNumber),
+    invoiceDate: preferValue(aiInvoice.invoiceDate, localInvoice.invoiceDate),
+    taxable: preferValue(aiInvoice.taxable, localInvoice.taxable),
+    vat: preferValue(aiInvoice.vat, localInvoice.vat),
+    total: preferValue(aiInvoice.total, localInvoice.total),
+    withholding,
+    iban: preferValue(aiInvoice.iban, localInvoice.iban),
+    dueDate: preferValue(aiInvoice.dueDate, localInvoice.dueDate),
+    paymentTerms: preferValue(aiInvoice.paymentTerms, localInvoice.paymentTerms),
+    rawText: preferValue(aiInvoice.rawText, localInvoice.rawText),
+  };
+}
+
+function enrichTransferWithLocal(aiTransfer, localTransfer) {
+  if (!localTransfer || localTransfer.type !== "transfer") return aiTransfer;
+  return {
+    ...aiTransfer,
+    paymentType: preferValue(aiTransfer.paymentType, localTransfer.paymentType),
+    documentDate: preferValue(aiTransfer.documentDate, localTransfer.documentDate),
+    executionDate: preferValue(aiTransfer.executionDate, localTransfer.executionDate),
+    dueDate: preferValue(aiTransfer.dueDate, localTransfer.dueDate),
+    total: preferValue(aiTransfer.total, localTransfer.total),
+    bank: preferValue(aiTransfer.bank, localTransfer.bank),
+    payer: preferValue(aiTransfer.payer, localTransfer.payer),
+    payerIban: preferValue(aiTransfer.payerIban, localTransfer.payerIban),
+    beneficiary: preferValue(aiTransfer.beneficiary, localTransfer.beneficiary),
+    beneficiaryVat: preferValue(aiTransfer.beneficiaryVat, localTransfer.beneficiaryVat),
+    beneficiaryIban: preferValue(aiTransfer.beneficiaryIban, localTransfer.beneficiaryIban),
+    swift: preferValue(aiTransfer.swift, localTransfer.swift),
+    reason: preferValue(aiTransfer.reason, localTransfer.reason),
+    noticeNumber: preferValue(aiTransfer.noticeNumber, localTransfer.noticeNumber),
+    flowName: preferValue(aiTransfer.flowName, localTransfer.flowName),
+    rawText: preferValue(aiTransfer.rawText, localTransfer.rawText),
+  };
+}
+
 async function classifyDocumentsWithGemini(files, existingRecords, pendingPayments) {
   const aiResult = await callGeminiMatcher(files, existingRecords, pendingPayments);
   if (!aiResult || !aiResult.payload) {
@@ -999,7 +1049,21 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
       : null;
   }
   const { payload } = aiResult;
-  const normalizedDocs = await Promise.all((payload.documents || []).map((doc) => normalizeAiDocument(doc)));
+  const localDocsByFile = new Map();
+  for (const file of files) {
+    const docs = await classifyPdf(file);
+    const firstInvoice = docs.find((doc) => doc.type === "invoice");
+    const firstTransfer = docs.find((doc) => doc.type === "transfer");
+    const firstSupport = docs.find((doc) => doc.type === "support");
+    localDocsByFile.set(file.name, firstInvoice || firstTransfer || firstSupport || null);
+  }
+  const normalizedDocs = await Promise.all((payload.documents || []).map(async (doc) => {
+    const normalized = await normalizeAiDocument(doc);
+    const localDoc = localDocsByFile.get(doc.fileName);
+    if (normalized.type === "invoice") return enrichInvoiceWithLocal(normalized, localDoc);
+    if (normalized.type === "transfer") return enrichTransferWithLocal(normalized, localDoc);
+    return normalized;
+  }));
   const invoices = dedupeInvoices(normalizedDocs.filter((doc) => doc.type === "invoice" && isMeaningfulInvoice(doc)));
   const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
   const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
