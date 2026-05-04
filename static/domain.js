@@ -246,6 +246,20 @@ export function outstandingLabel(total, paid) {
   return remaining < 0.00001 ? "Pagato" : decimalToIt(remaining);
 }
 
+export function withholdingAmount(invoice = {}) {
+  return invoice.withholdingEur
+    ?? decimalFromIt(invoice.withholding)
+    ?? decimalFromIt(invoice.withholdingAmount)
+    ?? 0;
+}
+
+export function payableInvoiceAmount(invoice = {}) {
+  const gross = invoice.totalEur ?? decimalFromIt(invoice.total);
+  if (gross === null) return null;
+  const withholding = withholdingAmount(invoice);
+  return Math.max(0, gross - withholding);
+}
+
 export function amountPaidLabel(total, outstanding) {
   if (total === null) return "";
   const remaining = String(outstanding || "").trim().toUpperCase() === "PAGATO" ? 0 : (decimalFromIt(outstanding) || 0);
@@ -345,6 +359,7 @@ function isInstantPaidMethod(paymentTerms = "") {
 export function recalculateRecord(invoice, transfers, index, matchDebug = null, source = "upload") {
   const safeTransfers = normalizeTransfers(transfers);
   const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total);
+  const invoicePayable = payableInvoiceAmount(invoice);
   const taxableEuro = invoice.taxableEur ?? decimalFromIt(invoice.taxable);
   const vatEuro = invoice.vatEur ?? decimalFromIt(invoice.vat);
   const taxableUsd = invoice.currency === "USD"
@@ -352,8 +367,8 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
     : null;
   const instantPaid = isInstantPaidMethod(invoice.paymentTerms);
   const transfersPaidAmount = safeTransfers.reduce((sum, transfer) => sum + (transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0), 0);
-  const paidAmount = instantPaid ? (invoiceTotal ?? transfersPaidAmount) : transfersPaidAmount;
-  const remainingLabel = outstandingLabel(invoiceTotal, paidAmount);
+  const paidAmount = instantPaid ? (invoicePayable ?? invoiceTotal ?? transfersPaidAmount) : transfersPaidAmount;
+  const remainingLabel = outstandingLabel(invoicePayable ?? invoiceTotal, paidAmount);
   const row = normalizeRow({
     "Num.": String(index),
     Fornitore: invoice.supplier || safeTransfers[0]?.beneficiary || "",
@@ -446,12 +461,16 @@ export function matchScore(invoice, transfer) {
   }
 
   const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total);
+  const invoicePayable = payableInvoiceAmount(invoice);
   const transferTotal = transfer.totalEur ?? decimalFromIt(transfer.total);
-  const amountsMatch = invoiceTotal !== null && transferTotal !== null && Math.abs(invoiceTotal - transferTotal) < 0.00001;
-  if (amountsMatch) {
+  const amountsMatchGross = invoiceTotal !== null && transferTotal !== null && Math.abs(invoiceTotal - transferTotal) < 0.00001;
+  const amountsMatchNet = invoicePayable !== null && transferTotal !== null && Math.abs(invoicePayable - transferTotal) < 0.00001;
+  if (amountsMatchGross || amountsMatchNet) {
     score += 40;
     anchors += 1;
-    reasons.push("Importo bonifico uguale al totale fattura");
+    reasons.push(amountsMatchNet && !amountsMatchGross
+      ? `Importo pagamento uguale al netto fattura dopo ritenuta (${decimalToIt(invoicePayable)} €)`
+      : "Importo bonifico uguale al totale fattura");
   } else {
     issues.push("Importo diverso");
     if (isRibaPair) score -= 25;
@@ -530,7 +549,7 @@ export function pairDocuments(invoices, transfers) {
 
   for (const item of queue) {
     const { invoice } = item;
-    const remainingStart = invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
+    const remainingStart = payableInvoiceAmount(invoice) ?? invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
     const ranked = effectiveTransfers
       .map((transfer, index) => ({ transfer, index, match: matchScore(invoice, transfer) }))
       .filter((entry) => !used.has(entry.index))

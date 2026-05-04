@@ -23,6 +23,8 @@ const templateCache = { workbook: null, parts: null };
 const fxCache = new Map();
 const APP_CONFIG_KEY = "martec-cloud-config";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_REQUEST_TIMEOUT_MS = 90000;
+const GEMINI_RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 function isFetchFailure(error) {
   return error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(String(error?.message || error || ""));
@@ -49,6 +51,10 @@ function sleep(ms) {
 function shouldFallbackFromGemini(status, text = "") {
   return [429, 500, 503, 504].includes(Number(status))
     || /high demand|try again later|overloaded|unavailable|quota/i.test(String(text || ""));
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError" || /aborted|timeout/i.test(String(error?.message || ""));
 }
 
 function geminiPermissionProblem(status, text = "") {
@@ -324,6 +330,7 @@ Regole fondamentali:
 - Se un documento contiene solo coordinate bancarie, anagrafica fornitore, loghi, istruzioni o altri dati di supporto senza essere una vera fattura o un vero pagamento, classificane il type come "support" e non usarlo per il matching.
 - Se nello stesso upload trovi due versioni della stessa fattura (ad esempio XML PDF e copia di cortesia con stesso fornitore, numero, data e totale), considera una sola fattura logica.
 - Se una fattura contiene note commerciali o causali narrative che citano pagamenti futuri (ad esempio RIBA o saldi successivi), dai priorita' ai campi strutturati del documento corrente come Modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo.
+- Se una fattura contiene una ritenuta d'acconto, estrai anche l'importo ritenuta. In questi casi il pagamento completo puo' essere inferiore al totale documento: usa come importo da saldare il netto \`totale documento - ritenuta\`.
 - Usa importi numerici senza simboli valuta.
 - Usa date nel formato DD/MM/YYYY quando possibile.
 
@@ -350,58 +357,92 @@ async function callGeminiMatcher(files, existingRecords = [], pendingPayments = 
     mimeType: "application/pdf",
     data: await fileToBase64(file),
   })));
-  let response;
-  try {
-    response = await fetch(`${supabaseUrl}/functions/v1/gemini-match`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        apikey: supabaseAnonKey,
-      },
-      body: JSON.stringify({
-        model: geminiModel,
-        prompt: geminiPrompt(fileIds, existingRecords, pendingPayments),
-        documents,
-      }),
-    });
-  } catch (error) {
-    if (isFetchFailure(error)) {
-      throw new Error("Connessione non riuscita verso la funzione AI di Supabase. Controlla internet e che la funzione sia pubblicata.");
+  const requestBody = JSON.stringify({
+    model: geminiModel,
+    prompt: geminiPrompt(fileIds, existingRecords, pendingPayments),
+    documents,
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort("timeout"), GEMINI_REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(`${supabaseUrl}/functions/v1/gemini-match`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: requestBody,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      if (isAbortError(error)) {
+        if (attempt === 0) {
+          await sleep(1000);
+          continue;
+        }
+        return {
+          payload: null,
+          fileIds,
+          modelUsed: null,
+          fallbackReason: "Tempo massimo AI superato: documenti salvati senza abbinamento automatico.",
+        };
+      }
+      if (isFetchFailure(error)) {
+        throw new Error("Connessione non riuscita verso la funzione AI di Supabase. Controlla internet e che la funzione sia pubblicata.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
     }
-    throw error;
+
+    if (response.ok) {
+      const json = await response.json();
+      return { payload: json, fileIds, modelUsed: json.modelUsed || geminiModel };
+    }
+
+    const text = await response.text();
+    if (geminiPermissionProblem(response.status, text)) {
+      return {
+        payload: null,
+        fileIds,
+        modelUsed: null,
+        fallbackReason: "Gemini disattivato: la chiave server-side e' bloccata o revocata.",
+      };
+    }
+    if (response.status === 404) {
+      return {
+        payload: null,
+        fileIds,
+        modelUsed: null,
+        fallbackReason: "Funzione AI non pubblicata su Supabase",
+      };
+    }
+    if (shouldFallbackFromGemini(response.status, text)) {
+      if (attempt === 0 && GEMINI_RETRY_STATUSES.has(Number(response.status))) {
+        await sleep(1200);
+        continue;
+      }
+      return {
+        payload: null,
+        fileIds,
+        modelUsed: null,
+        fallbackReason: `Gemini temporaneamente non disponibile (${response.status})`,
+      };
+    }
+    throw new Error(`La funzione AI non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
   }
-  if (response.ok) {
-    const json = await response.json();
-    return { payload: json, fileIds, modelUsed: json.modelUsed || geminiModel };
-  }
-  const text = await response.text();
-  if (geminiPermissionProblem(response.status, text)) {
-    return {
-      payload: null,
-      fileIds,
-      modelUsed: null,
-      fallbackReason: "Gemini disattivato: la chiave server-side e' bloccata o revocata.",
-    };
-  }
-  if (response.status === 404) {
-    return {
-      payload: null,
-      fileIds,
-      modelUsed: null,
-      fallbackReason: "Funzione AI non pubblicata su Supabase",
-    };
-  }
-  if (shouldFallbackFromGemini(response.status, text)) {
-    await sleep(1200);
-    return {
-      payload: null,
-      fileIds,
-      modelUsed: null,
-      fallbackReason: `Gemini temporaneamente non disponibile (${response.status})`,
-    };
-  }
-  throw new Error(`La funzione AI non ha accettato la richiesta (${response.status}). ${text.slice(0, 180)}`);
+
+  return {
+    payload: null,
+    fileIds,
+    modelUsed: null,
+    fallbackReason: "Gemini non ha risposto in tempo utile: documenti salvati senza abbinamento automatico.",
+  };
 }
 
 function findTransferAmount(lines, fullText) {
@@ -428,6 +469,17 @@ function findTransferAmount(lines, fullText) {
     .filter((entry) => Number.isFinite(entry.numeric))
     .sort((a, b) => b.numeric - a.numeric);
   return allAmounts[0]?.value || "";
+}
+
+function findWithholdingAmount(lines, fullText) {
+  const blockMatch = fullText.match(/Dati ritenuta d['’]acconto[\s\S]{0,300}?RT\d{2}[\s\S]{0,200}?(\d{1,3}(?:\.\d{3})*,\d{2})/i);
+  if (blockMatch?.[1]) return cleanText(blockMatch[1]);
+  const line = lines.find((entry) => /RT\d{2}.*Ritenuta/i.test(entry));
+  if (line) {
+    const amounts = moneyCandidates(line);
+    if (amounts.length) return amounts[amounts.length - 1];
+  }
+  return "";
 }
 
 function findTransferCurrency(fullText) {
@@ -547,6 +599,7 @@ export async function parseInvoice(file) {
   let taxable = moneyBelowLabel(items, "Totale imponibile", { xMin: 430, xMax: 510 });
   let vat = moneyBelowLabel(items, "Totale imposta", { xMin: 525, xMax: 585 });
   let total = moneyBelowLabel(items, "Totale documento", { xMin: 520, xMax: 585 });
+  const withholding = findWithholdingAmount(linesFromItems(items), fullText);
   if (!taxable) taxable = firstMatch("Totale imponibile\\s+Totale imposta.*?\\n.*?\\d+,\\d{2}\\s+(\\d+,\\d{2})\\s+\\d+,\\d{2}", fullText, "is");
   if (!vat) vat = firstMatch("Totale imponibile\\s+Totale imposta.*?\\n.*?\\d+,\\d{2}\\s+\\d+,\\d{2}\\s+(\\d+,\\d{2})", fullText, "is");
   if (!total) total = firstMatch("Totale documento\\s+(\\d+,\\d{2})", fullText, "i");
@@ -573,6 +626,7 @@ export async function parseInvoice(file) {
     taxable,
     vat,
     total,
+    withholding,
     currency,
     ...amounts,
     iban,
@@ -898,6 +952,7 @@ async function normalizeAiDocument(raw) {
       taxable: numberToIt(raw.taxable),
       vat: numberToIt(raw.vat),
       total: numberToIt(raw.total),
+      withholding: numberToIt(raw.withholdingAmount),
       currency: detectDocumentCurrency("", raw.currency),
       ...amounts,
       iban: "",

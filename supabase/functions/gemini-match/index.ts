@@ -27,6 +27,7 @@ const RESPONSE_SCHEMA = {
           taxable: { type: "number" },
           vat: { type: "number" },
           total: { type: "number" },
+          withholdingAmount: { type: "number" },
           currency: { type: "string" },
           bank: { type: "string" },
           payer: { type: "string" },
@@ -181,7 +182,7 @@ Deno.serve(async (request) => {
           body: JSON.stringify({
             system_instruction: {
               parts: [{
-                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido. Se un PDF contiene solo coordinate bancarie, anagrafica fornitore, istruzioni generiche o materiale di supporto, classificane il type come support e non usarlo come fattura o pagamento. Se una fattura contiene note descrittive che citano pagamenti futuri o diversi, dai priorita' ai campi strutturati del documento corrente come modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo.",
+                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido. Se un PDF contiene solo coordinate bancarie, anagrafica fornitore, istruzioni generiche o materiale di supporto, classificane il type come support e non usarlo come fattura o pagamento. Se una fattura contiene note descrittive che citano pagamenti futuri o diversi, dai priorita' ai campi strutturati del documento corrente come modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo. Se una fattura contiene una ritenuta d'acconto, estrai anche withholdingAmount e considera corretto un pagamento netto pari a totale meno ritenuta.",
               }],
             },
             contents: [{ role: "user", parts }],
