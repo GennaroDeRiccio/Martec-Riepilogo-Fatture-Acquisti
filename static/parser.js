@@ -10,6 +10,7 @@ import {
   decimalToIt,
   exportRowFromRecord,
   normalizeDate,
+  normalizeKey,
   normalizeRow,
   normalizeTransfers,
   pairDocuments,
@@ -241,6 +242,77 @@ function existingPendingPaymentSummary(pendingPayments = []) {
   }));
 }
 
+function transferMergeKey(transfer = {}) {
+  return [
+    cleanText(transfer.paymentType || "").toUpperCase(),
+    cleanText(transfer.fileName || "").toUpperCase(),
+    cleanText(transfer.beneficiary || "").toUpperCase(),
+    cleanText(transfer.total || "").toUpperCase(),
+    cleanText(transfer.dueDate || "").toUpperCase(),
+    cleanText(transfer.executionDate || "").toUpperCase(),
+    cleanText(transfer.noticeNumber || "").toUpperCase(),
+    cleanText(transfer.reason || "").toUpperCase(),
+  ].join("|");
+}
+
+function dedupeTransfers(transfers = []) {
+  const byKey = new Map();
+  for (const transfer of transfers) {
+    const key = transferMergeKey(transfer);
+    if (!key.replace(/\|/g, "")) {
+      byKey.set(`transfer-${crypto.randomUUID()}`, transfer);
+      continue;
+    }
+    const current = byKey.get(key);
+    byKey.set(key, current ? enrichTransferWithLocal(current, transfer) : transfer);
+  }
+  return [...byKey.values()];
+}
+
+function removeRibaContainerTransfers(transfers = [], localTransfers = []) {
+  const ribaFilesWithEffects = new Map();
+  for (const transfer of localTransfers) {
+    if (String(transfer.paymentType || "").toUpperCase() !== "RIBA") continue;
+    const fileName = cleanText(transfer.fileName || "");
+    if (!fileName) continue;
+    const amounts = ribaFilesWithEffects.get(fileName) || new Set();
+    amounts.add(decimalFromIt(transfer.total) ?? transfer.totalEur ?? null);
+    ribaFilesWithEffects.set(fileName, amounts);
+  }
+  if (!ribaFilesWithEffects.size) return transfers;
+  return transfers.filter((transfer) => {
+    if (String(transfer.paymentType || "").toUpperCase() !== "RIBA") return true;
+    const fileName = cleanText(transfer.fileName || "");
+    const effectAmounts = ribaFilesWithEffects.get(fileName);
+    if (!effectAmounts) return true;
+    const amount = transfer.totalEur ?? decimalFromIt(transfer.total);
+    const amountMatchesEffect = [...effectAmounts].some((effectAmount) => effectAmount !== null && Math.abs(effectAmount - amount) < 0.00001);
+    return amountMatchesEffect;
+  });
+}
+
+function bestLocalRibaEffectForAllocation(invoice = {}, allocation = {}, aiTransfer = {}, localTransfers = []) {
+  const amount = allocation.allocatedAmount ?? aiTransfer.totalEur ?? decimalFromIt(aiTransfer.total);
+  const invoiceNumber = normalizeKey(invoice.invoiceNumber || "");
+  const supplier = normalizeKey(invoice.supplier || "");
+  const candidates = localTransfers
+    .filter((transfer) => String(transfer.paymentType || "").toUpperCase() === "RIBA")
+    .map((transfer) => {
+      let score = 0;
+      const transferAmount = transfer.totalEur ?? decimalFromIt(transfer.total);
+      const reason = normalizeKey([transfer.reason, transfer.noticeNumber, transfer.rawText].filter(Boolean).join(" "));
+      const beneficiary = normalizeKey(transfer.beneficiary || "");
+      if (amount !== null && transferAmount !== null && Math.abs(amount - transferAmount) < 0.00001) score += 80;
+      if (invoiceNumber && reason.includes(invoiceNumber)) score += 120;
+      if (supplier && beneficiary && (supplier.includes(beneficiary) || beneficiary.includes(supplier))) score += 40;
+      if (invoice.supplierVat && transfer.beneficiaryVat && normalizeKey(invoice.supplierVat) === normalizeKey(transfer.beneficiaryVat)) score += 80;
+      if (invoice.dueDate && transfer.dueDate && normalizeDate(invoice.dueDate) === normalizeDate(transfer.dueDate)) score += 30;
+      return { transfer, score };
+    })
+    .sort((left, right) => right.score - left.score);
+  return candidates[0]?.score ? candidates[0].transfer : null;
+}
+
 function invoiceLogicalKey(invoice = {}) {
   return [
     cleanText(invoice.supplier || "").toUpperCase(),
@@ -376,6 +448,8 @@ Devi:
 
 Regole fondamentali:
 - Per i RIBA, il campo più importante è "Riferimento Operazione".
+- Un PDF RIBA non è un singolo pagamento: è un contenitore. Devi estrarre ogni "Dati effetto" come payment separato, con id univoco anche se il fileName è lo stesso.
+- Ogni effetto RIBA deve avere almeno: creditore/beneficiary, importo, scadenza, numero avviso se presente, riferimento operazione/reason.
 - Un singolo pagamento può coprire più fatture.
 - Una singola fattura può avere più pagamenti.
 - Una singola fattura puo' avere anche un piano pagamenti con piu' quote attese: estrai paymentSplits e usa quelle quote per distinguere pagamento totale fattura da pagamento di una quota della stessa fattura.
@@ -1179,12 +1253,22 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
   }
   const { payload } = aiResult;
   const localDocsByFile = new Map();
-  for (const file of files) {
+  const localTransfers = [];
+  for (const [fileIndex, file] of files.entries()) {
     const docs = await classifyPdf(file);
     const firstInvoice = docs.find((doc) => doc.type === "invoice");
     const firstTransfer = docs.find((doc) => doc.type === "transfer");
     const firstSupport = docs.find((doc) => doc.type === "support");
     localDocsByFile.set(file.name, firstInvoice || firstTransfer || firstSupport || null);
+    docs
+      .filter((doc) => doc.type === "transfer")
+      .forEach((doc, docIndex) => {
+        localTransfers.push({
+          ...doc,
+          aiId: `local_${documentIdForFile(file.name, fileIndex)}_${docIndex + 1}`,
+          fileName: file.name,
+        });
+      });
   }
   const normalizedDocs = await Promise.all((payload.documents || []).map(async (doc) => {
     const normalized = await normalizeAiDocument(doc);
@@ -1194,7 +1278,10 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
     return normalized;
   }));
   const invoices = dedupeInvoices(normalizedDocs.filter((doc) => doc.type === "invoice" && isMeaningfulInvoice(doc)));
-  const transfers = normalizedDocs.filter((doc) => doc.type === "transfer");
+  const transfers = removeRibaContainerTransfers(dedupeTransfers([
+    ...normalizedDocs.filter((doc) => doc.type === "transfer"),
+    ...localTransfers,
+  ]), localTransfers);
   const invoiceById = new Map(invoices.map((doc) => [doc.aiId, doc]));
   const transferById = new Map(transfers.map((doc) => [doc.aiId, doc]));
   const pendingBySignature = new Map((pendingPayments || []).map((entry) => [entry.signature, entry.payment || {}]));
@@ -1204,7 +1291,10 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
       if (!invoice) return null;
       const matchedTransfers = (entry.paymentAllocations || [])
         .map((allocation) => {
-          const transfer = transferById.get(allocation.paymentDocumentId);
+          const rawTransfer = transferById.get(allocation.paymentDocumentId);
+          const transfer = rawTransfer && String(rawTransfer.paymentType || "").toUpperCase() === "RIBA"
+            ? bestLocalRibaEffectForAllocation(invoice, allocation, rawTransfer, localTransfers) || rawTransfer
+            : rawTransfer;
           if (!transfer) return null;
           return {
             ...transfer,
@@ -1237,7 +1327,10 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
     rationale: cleanText(entry.rationale),
     transfers: (entry.paymentAllocations || [])
       .map((allocation) => {
-        const transfer = transferById.get(allocation.paymentDocumentId);
+        const rawTransfer = transferById.get(allocation.paymentDocumentId);
+        const transfer = rawTransfer && String(rawTransfer.paymentType || "").toUpperCase() === "RIBA"
+          ? bestLocalRibaEffectForAllocation({}, allocation, rawTransfer, localTransfers) || rawTransfer
+          : rawTransfer;
         if (!transfer) return null;
         return {
           ...transfer,
