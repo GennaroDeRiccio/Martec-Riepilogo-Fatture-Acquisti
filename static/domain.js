@@ -172,9 +172,13 @@ function reasonReferenceMatch(invoiceNumber = "", transfer = {}) {
   const fragment = variants.find((variant) => normalizedReason.includes(variant));
   if (!fragment) return { matched: false, strong: false, fragment: "" };
   const full = normalizeKey(invoiceNumber);
+  const strongFragment = fragment === full
+    || fragment.length >= Math.max(5, full.length - 2)
+    || /\d{5,}/.test(fragment)
+    || (fragment.length >= 5 && /[A-Z]/.test(fragment) && /\d/.test(fragment));
   return {
     matched: true,
-    strong: fragment === full || fragment.length >= Math.max(5, full.length - 2),
+    strong: strongFragment,
     fragment,
   };
 }
@@ -230,6 +234,16 @@ function findMatchingInvoiceSubset(candidates = [], targetTotal = 0) {
   return best;
 }
 
+function explicitReferenceCandidates(candidates = [], targetTotal = 0) {
+  const referenced = candidates
+    .filter((entry) => entry.ref?.strong)
+    .map((entry) => ({ ...entry, amount: invoicePaymentTarget(entry.invoice) }))
+    .filter((entry) => entry.amount > 0);
+  if (referenced.length < 2) return [];
+  const sum = referenced.reduce((total, entry) => total + entry.amount, 0);
+  return sum <= targetTotal + 0.01 ? referenced : [];
+}
+
 function expandRibaTransfers(invoices, transfers) {
   const expanded = [];
   for (const transfer of transfers) {
@@ -252,17 +266,18 @@ function expandRibaTransfers(invoices, transfers) {
     }
 
     const transferTotal = transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0;
-    const exactCandidates = findMatchingInvoiceSubset(candidates, transferTotal);
-    if (exactCandidates.length < 2) {
+    const splitCandidates = findMatchingInvoiceSubset(candidates, transferTotal);
+    const explicitCandidates = splitCandidates.length >= 2 ? splitCandidates : explicitReferenceCandidates(candidates, transferTotal);
+    if (explicitCandidates.length < 2) {
       expanded.push(transfer);
       continue;
     }
 
-    const splitInvoices = exactCandidates
+    const splitInvoices = explicitCandidates
       .map((entry) => entry.invoice.invoiceNumber || "")
       .filter(Boolean)
       .join(", ");
-    exactCandidates.forEach((entry) => {
+    explicitCandidates.forEach((entry) => {
       expanded.push(cloneTransferForInvoice(transfer, entry.invoice, splitInvoices));
     });
   }
@@ -650,6 +665,18 @@ export function matchScore(invoice, transfer) {
   let score = 0;
   const reasons = [];
   const issues = [];
+  if (transfer.splitFromRiba && transfer.splitInvoiceNumber) {
+    const expected = normalizeKey(transfer.splitInvoiceNumber);
+    const actualVariants = invoiceReferenceVariants(invoice.invoiceNumber || "").map(normalizeKey);
+    if (!actualVariants.includes(expected) && normalizeKey(invoice.invoiceNumber || "") !== expected) {
+      return {
+        score: 0,
+        reasons: [],
+        issues: [`Quota RIBA destinata alla fattura ${transfer.splitInvoiceNumber}`],
+        summary: "Quota RIBA assegnata a un'altra fattura",
+      };
+    }
+  }
   const splitMatch = bestInvoiceSplitMatch(invoice, transfer);
   const invoiceMethod = splitMatch?.split?.paymentType || normalizePaymentMethod(invoice.paymentTerms);
   const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
