@@ -99,6 +99,32 @@ function moneyCandidates(text) {
   return [...String(text || "").matchAll(/\b\d{1,3}(?:\.\d{3})*,\d{2}\b/g)].map((match) => match[0]);
 }
 
+function moneyFromFileName(fileName = "") {
+  const text = cleanText(String(fileName || "").replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
+  const preferred = firstMatch("(?:VALORE|IMPORTO|TOTALE|EUR|EURO)\\s*([\\d.]+,\\d{2})", text, "i");
+  if (preferred) return preferred;
+  const symbolBefore = firstMatch("(?:€|EUR)\\s*([\\d.]+,\\d{2})", text, "i");
+  if (symbolBefore) return symbolBefore;
+  const symbolAfter = firstMatch("([\\d.]+,\\d{2})\\s*(?:€|EUR|EURO)", text, "i");
+  if (symbolAfter) return symbolAfter;
+  const amounts = moneyCandidates(text);
+  return amounts.at(-1) || "";
+}
+
+function beneficiaryFromFileName(fileName = "") {
+  const text = cleanText(String(fileName || "").replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
+  return firstMatch("^BONIFICO\\s+(?:DI\\s+)?(.+?)(?:\\s+FATTURA|\\s+INVOICE|\\s+PROFORMA|\\s+CONFERMA|\\s+ORDINE|\\s+VALORE|\\s+IMPORTO|\\s+\\d{1,3}(?:\\.\\d{3})*,\\d{2}|$)", text, "i");
+}
+
+function paymentTypeFromText(text = "") {
+  const source = String(text || "").toUpperCase();
+  if (/\bRIBA\b|RICEVUTA BANCARIA|PAGAMENTO EFFETTI/.test(source)) return "RIBA";
+  if (/PAYPAL/.test(source)) return "PayPal";
+  if (/CARTA DI CREDITO|CARTA DI PAGAMENTO/.test(source)) return "Carta di credito";
+  if (/BONIFICO|SEPA|CREDIT TRANSFER/.test(source)) return "Bonifico";
+  return "";
+}
+
 function detectDocumentCurrency(text, explicitValue = "") {
   const explicit = String(explicitValue || "").trim().toUpperCase();
   if (["USD", "EUR"].includes(explicit)) return explicit;
@@ -756,6 +782,22 @@ function findTransferAmount(lines, fullText) {
   return allAmounts[0]?.value || "";
 }
 
+function findTransferReason(lines, fullText, fileName = "") {
+  const infoIndex = lines.findIndex((line) => /Informazioni aggiuntive/i.test(line));
+  if (infoIndex !== -1) {
+    const collected = [];
+    for (let index = infoIndex + 1; index < Math.min(lines.length, infoIndex + 5); index += 1) {
+      const line = lines[index];
+      if (/^(Esito|Data|Totale|Banca|Beneficiario|Conto beneficiario|Codice SWIFT)\b/i.test(line)) break;
+      collected.push(line);
+    }
+    if (collected.length) return cleanText(collected.join(" "));
+  }
+  const inline = firstMatch("Informazioni aggiuntive[^\\n]*\\n(.+?)(?:\\n(?:Esito|Data|Totale|Banca|Beneficiario)|$)", fullText, "is");
+  if (inline) return inline;
+  return cleanText(String(fileName || "").replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
+}
+
 function findWithholdingAmount(lines, fullText) {
   const blockMatch = fullText.match(/Dati ritenuta d['’]acconto[\s\S]{0,400}?RT\d{2}[\s\S]{0,250}/i);
   if (blockMatch?.[0]) {
@@ -807,33 +849,54 @@ function parsePaymentSplits(fullText) {
     .map(cleanText)
     .filter(Boolean);
   const headerIndex = lines.findIndex((line) => /Modalità pagamento/i.test(line) && /Data scadenza/i.test(line) && /Importo/i.test(line));
-  if (headerIndex === -1) return [];
   const splits = [];
-  for (let index = headerIndex + 1; index < Math.min(lines.length, headerIndex + 8); index += 1) {
-    const line = lines[index];
-    if (/^Allegati:?$/i.test(line) || /^Dati ritenuta/i.test(line) || /^RIEPILOGHI IVA/i.test(line)) break;
-    const amountMatch = line.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*$/);
-    const dateMatch = line.match(/(\d{2}-\d{2}-\d{4}|\d{2}\/\d{2}\/\d{4}|\d{2}\.\d{2}\.\d{4})/);
-    if (!amountMatch || !dateMatch) continue;
-    const amount = cleanText(amountMatch[1]);
-    const dueDate = normalizeDate(dateMatch[1]);
-    const paymentType = detectInvoicePaymentMethod(line, line);
-    const bankReference = cleanText(
-      line
-        .replace(amountMatch[1], "")
-        .replace(dateMatch[1], "")
-        .replace(/^MP\d{2}\s*/i, "")
-        .replace(/\s+/g, " "),
-    );
+  if (headerIndex !== -1) {
+    for (let index = headerIndex + 1; index < Math.min(lines.length, headerIndex + 8); index += 1) {
+      const line = lines[index];
+      if (/^Allegati:?$/i.test(line) || /^Dati ritenuta/i.test(line) || /^RIEPILOGHI IVA/i.test(line)) break;
+      const amountMatch = line.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*$/);
+      const dateMatch = line.match(/(\d{2}-\d{2}-\d{4}|\d{2}\/\d{2}\/\d{4}|\d{2}\.\d{2}\.\d{4})/);
+      if (!amountMatch || !dateMatch) continue;
+      const amount = cleanText(amountMatch[1]);
+      const dueDate = normalizeDate(dateMatch[1]);
+      const paymentType = detectInvoicePaymentMethod(line, line);
+      const bankReference = cleanText(
+        line
+          .replace(amountMatch[1], "")
+          .replace(dateMatch[1], "")
+          .replace(/^MP\d{2}\s*/i, "")
+          .replace(/\s+/g, " "),
+      );
+      splits.push({
+        paymentType: paymentType || "",
+        dueDate,
+        amount,
+        amountEur: decimalFromIt(amount),
+        bankReference,
+      });
+    }
+  }
+
+  const compactText = cleanText(String(fullText || "").replace(/\n+/g, " "));
+  const structuredMatches = [...compactText.matchAll(/\b(MP\d{2})\s+(.{0,90}?)(\d{2}[-/.]\d{2}[-/.]\d{4})\s+([\d.]+,\d{2})/gi)];
+  for (const match of structuredMatches) {
+    const [, code, description, rawDate, rawAmount] = match;
+    const paymentType = detectInvoicePaymentMethod(`${code} ${description}`, `${code} ${description}`);
     splits.push({
-      paymentType: paymentType || "",
-      dueDate,
-      amount,
-      amountEur: decimalFromIt(amount),
-      bankReference,
+      paymentType: paymentType || cleanText(`${code} ${description}`),
+      dueDate: normalizeDate(rawDate),
+      amount: cleanText(rawAmount),
+      amountEur: decimalFromIt(rawAmount),
+      bankReference: cleanText(description),
     });
   }
-  return splits;
+
+  const byKey = new Map();
+  for (const split of splits) {
+    const key = [split.paymentType, split.dueDate, split.amount].map((value) => cleanText(value).toUpperCase()).join("|");
+    if (key.replace(/\|/g, "")) byKey.set(key, split);
+  }
+  return [...byKey.values()];
 }
 
 export async function parseRibaEffects(file) {
@@ -992,10 +1055,12 @@ export async function parseTransfer(file) {
   if (isSupportDocumentText(fullText)) {
     return { type: "support", rawText: fullText };
   }
-  const total = findTransferAmount(lines, fullText);
+  const total = findTransferAmount(lines, fullText) || moneyFromFileName(file?.name || "");
   const currency = findTransferCurrency(fullText);
   const executionDate = normalizeDate(firstMatch("Data esecuzione:\\s+(\\d{2}\\.\\d{2}\\.\\d{4})", fullText));
   const documentDate = normalizeDate(firstMatch("Data:\\s+(\\d{2}\\.\\d{2}\\.\\d{4})", fullText));
+  const beneficiary = valueOnSameRow(items, "Beneficiario", { valueMinX: 150 }) || beneficiaryFromFileName(file?.name || "");
+  const reason = findTransferReason(lines, fullText, file?.name || "");
   const amounts = await normalizeCurrencyAmounts({
     currency,
     date: executionDate || documentDate,
@@ -1003,6 +1068,7 @@ export async function parseTransfer(file) {
   });
   return {
     type: "transfer",
+    paymentType: paymentTypeFromText(`${file?.name || ""}\n${fullText}`) || "Bonifico",
     documentDate,
     bank: firstMatch("(INTESA SANPAOLO S\\.P\\.A\\.)", fullText),
     payer: valueOnSameRow(items, "Ragione Sociale:", { valueMinX: 130 }),
@@ -1011,10 +1077,10 @@ export async function parseTransfer(file) {
     total,
     currency,
     ...amounts,
-    beneficiary: valueOnSameRow(items, "Beneficiario", { valueMinX: 150 }),
+    beneficiary,
     beneficiaryIban: firstMatch("Conto beneficiario\\s+(IT\\d{2}[A-Z]\\d{22})", fullText),
     swift: firstMatch("Codice SWIFT\\s+([A-Z0-9]+)", fullText),
-    reason: firstMatch("Informazioni aggiuntive \\(max\\s+(.+)", fullText),
+    reason,
     rawText: fullText,
   };
 }
@@ -1636,7 +1702,17 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
   const localResult = await classifyDocumentsLocally(files, existingRecords, pendingPayments);
   if (!shouldEscalateLocalResult(localResult)) return localResult;
 
-  const aiResult = await classifyDocumentsWithGemini(files, existingRecords, pendingPayments);
+  let aiResult;
+  try {
+    aiResult = await classifyDocumentsWithGemini(files, existingRecords, pendingPayments);
+  } catch (error) {
+    return classifyDocumentsLocally(
+      files,
+      existingRecords,
+      pendingPayments,
+      `AI non disponibile (${cleanText(error?.message || error)}).`,
+    );
+  }
   if (aiResult?.aiUsed) return {
     ...aiResult,
     aiFallbackReason: "AI usata per casi ambigui dopo matching locale.",

@@ -123,9 +123,39 @@ function invoiceReferenceVariants(value = "") {
   const compact = normalized.replace(/^(FT|FAT|FATTURA|DOC|DOCUMENTO|NUMERO)+/, "");
   const digitRuns = [...source.matchAll(/\d{2,}/g)].map((match) => match[0]);
   const variants = new Set([normalized, compact]);
-  digitRuns.forEach((digits) => variants.add(digits));
-  if (digitRuns.length >= 2) variants.add(digitRuns.join(""));
-  if (digitRuns.length) variants.add(`${digitRuns[0]}${alphaPrefix(source)}`);
+  digitRuns.forEach((digits) => {
+    const stripped = digits.replace(/^0+/, "") || digits;
+    variants.add(digits);
+    variants.add(stripped);
+  });
+  if (digitRuns.length >= 2) {
+    const joined = digitRuns.join("");
+    variants.add(joined);
+    variants.add(joined.replace(/^0+/, "") || joined);
+  }
+  if (digitRuns.length) {
+    const stripped = digitRuns[0].replace(/^0+/, "") || digitRuns[0];
+    const prefix = alphaPrefix(source);
+    if (prefix) {
+      variants.add(`${digitRuns[0]}${prefix}`);
+      variants.add(`${stripped}${prefix}`);
+      variants.add(`${prefix}${stripped}`);
+    }
+  }
+  for (const match of normalized.matchAll(/([A-Z]+)0*(\d{2,})/g)) {
+    const [, letters, digits] = match;
+    const stripped = digits.replace(/^0+/, "") || digits;
+    variants.add(`${letters}${digits}`);
+    variants.add(`${letters}${stripped}`);
+    variants.add(`${stripped}${letters}`);
+  }
+  for (const match of normalized.matchAll(/(\d{2,})0*([A-Z]+)/g)) {
+    const [, digits, letters] = match;
+    const stripped = digits.replace(/^0+/, "") || digits;
+    variants.add(`${digits}${letters}`);
+    variants.add(`${stripped}${letters}`);
+    variants.add(`${letters}${stripped}`);
+  }
   return [...variants].filter((entry) => entry && entry.length >= 3);
 }
 
@@ -258,6 +288,8 @@ function bestInvoiceSplitMatch(invoice = {}, transfer = {}) {
   const ranked = splits.map((split) => {
     let score = 0;
     if (transferMethod && split.paymentType && transferMethod === split.paymentType) score += 50;
+    else if (transferMethod === "BONIFICO" && split.paymentType === "RIBA") score -= 20;
+    else if (transferMethod === "RIBA" && split.paymentType && split.paymentType !== "RIBA") score -= 20;
     if (transferAmount !== null && split.amountEur !== null && Math.abs(split.amountEur - transferAmount) < 0.00001) score += 80;
     if (transferDate && split.dueDate && transferDate === split.dueDate) score += 60;
     return { split, score };
