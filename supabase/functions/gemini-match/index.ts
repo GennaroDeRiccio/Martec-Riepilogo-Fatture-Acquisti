@@ -22,6 +22,19 @@ const RESPONSE_SCHEMA = {
           supplier: { type: "string" },
           supplierVat: { type: "string" },
           documentType: { type: "string" },
+          paymentSplits: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                paymentType: { type: "string" },
+                dueDate: { type: "string" },
+                amount: { type: "number" },
+                bankReference: { type: "string" },
+              },
+              required: ["paymentType", "dueDate", "amount"],
+            },
+          },
           invoiceNumber: { type: "string" },
           invoiceDate: { type: "string" },
           dueDate: { type: "string" },
@@ -183,7 +196,7 @@ Deno.serve(async (request) => {
           body: JSON.stringify({
             system_instruction: {
               parts: [{
-                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido. Se un PDF contiene solo coordinate bancarie, anagrafica fornitore, istruzioni generiche o materiale di supporto, classificane il type come support e non usarlo come fattura o pagamento. Se una fattura contiene note descrittive che citano pagamenti futuri o diversi, dai priorita' ai campi strutturati del documento corrente come modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo. Se una fattura contiene una ritenuta d'acconto, estrai anche withholdingAmount e considera corretto un pagamento netto pari a totale meno ritenuta. Se il documento e' una proforma, trattalo come una riga valida ma valorizza documentType = Proforma.",
+                text: "Agisci come motore ufficiale di matching documentale. Decidi tu gli abbinamenti ufficiali tra fatture e pagamenti e restituisci solo JSON valido. Se un PDF contiene solo coordinate bancarie, anagrafica fornitore, istruzioni generiche o materiale di supporto, classificane il type come support e non usarlo come fattura o pagamento. Se una fattura contiene note descrittive che citano pagamenti futuri o diversi, dai priorita' ai campi strutturati del documento corrente come modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo. Se una fattura contiene una ritenuta d'acconto, estrai anche withholdingAmount e considera corretto un pagamento netto pari a totale meno ritenuta. Se il documento e' una proforma, trattalo come una riga valida ma valorizza documentType = Proforma. Se una fattura ha piu' quote di pagamento, estrai paymentSplits e usa quelle quote per capire se un pagamento copre una parte della fattura o l'intero saldo.",
               }],
             },
             contents: [{ role: "user", parts }],

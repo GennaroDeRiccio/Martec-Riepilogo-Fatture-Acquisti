@@ -204,6 +204,12 @@ function existingRecordSummary(records = []) {
     total: record.row?.Totale || "",
     outstanding: record.row?.["Da pagare ancora"] || "",
     paymentTerms: record.row?.["Termini pagamento fattura"] || "",
+    paymentSplits: (record.invoice?.paymentSplits || []).map((split) => ({
+      paymentType: split.paymentType || "",
+      dueDate: split.dueDate || "",
+      amount: split.amount || "",
+      bankReference: split.bankReference || "",
+    })),
     payments: normalizeTransfers(record.transfers || record.transfer || []).map((transfer) => ({
       paymentType: transfer.paymentType || "",
       total: transfer.total || "",
@@ -372,6 +378,7 @@ Regole fondamentali:
 - Per i RIBA, il campo più importante è "Riferimento Operazione".
 - Un singolo pagamento può coprire più fatture.
 - Una singola fattura può avere più pagamenti.
+- Una singola fattura puo' avere anche un piano pagamenti con piu' quote attese: estrai paymentSplits e usa quelle quote per distinguere pagamento totale fattura da pagamento di una quota della stessa fattura.
 - Se un effetto RIBA contiene riferimenti a più fatture, crea più allocazioni.
 - Non inventare abbinamenti se il riferimento non è abbastanza forte.
 - Considera l'archivio esistente come fonte valida per collegare pagamenti che non trovano la fattura nel batch corrente.
@@ -567,6 +574,41 @@ function detectInvoiceDocumentType(fullText = "", fileName = "") {
   return "Fattura";
 }
 
+function parsePaymentSplits(fullText) {
+  const lines = String(fullText || "")
+    .split(/\n+/)
+    .map(cleanText)
+    .filter(Boolean);
+  const headerIndex = lines.findIndex((line) => /Modalità pagamento/i.test(line) && /Data scadenza/i.test(line) && /Importo/i.test(line));
+  if (headerIndex === -1) return [];
+  const splits = [];
+  for (let index = headerIndex + 1; index < Math.min(lines.length, headerIndex + 8); index += 1) {
+    const line = lines[index];
+    if (/^Allegati:?$/i.test(line) || /^Dati ritenuta/i.test(line) || /^RIEPILOGHI IVA/i.test(line)) break;
+    const amountMatch = line.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*$/);
+    const dateMatch = line.match(/(\d{2}-\d{2}-\d{4}|\d{2}\/\d{2}\/\d{4}|\d{2}\.\d{2}\.\d{4})/);
+    if (!amountMatch || !dateMatch) continue;
+    const amount = cleanText(amountMatch[1]);
+    const dueDate = normalizeDate(dateMatch[1]);
+    const paymentType = detectInvoicePaymentMethod(line, line);
+    const bankReference = cleanText(
+      line
+        .replace(amountMatch[1], "")
+        .replace(dateMatch[1], "")
+        .replace(/^MP\d{2}\s*/i, "")
+        .replace(/\s+/g, " "),
+    );
+    splits.push({
+      paymentType: paymentType || "",
+      dueDate,
+      amount,
+      amountEur: decimalFromIt(amount),
+      bankReference,
+    });
+  }
+  return splits;
+}
+
 export async function parseRibaEffects(file) {
   const items = await extractPdfItems(file);
   const fullText = linesFromItems(items).join("\n");
@@ -685,6 +727,7 @@ export async function parseInvoice(file) {
     || firstMatch("Modalità pagamento\\s+(.+)", fullText, "i");
   const paymentTerms = detectInvoicePaymentMethod(fullText, explicitPaymentTerms);
   const documentType = detectInvoiceDocumentType(fullText, file?.name || "");
+  const paymentSplits = parsePaymentSplits(fullText);
   const explicitCurrency = firstMatch("Divisa\\s+([A-Z]{3})", fullText, "i");
   const currency = detectDocumentCurrency(fullText, explicitCurrency);
   const amounts = await normalizeCurrencyAmounts({
@@ -709,6 +752,7 @@ export async function parseInvoice(file) {
     iban,
     dueDate: normalizeDate(dueDate),
     paymentTerms,
+    paymentSplits,
     documentType,
     rawText: fullText,
   };
@@ -1028,6 +1072,13 @@ async function normalizeAiDocument(raw) {
       invoiceNumber: cleanText(raw.invoiceNumber),
       invoiceDate: normalizeDate(raw.invoiceDate),
       documentType: cleanText(raw.documentType || ""),
+      paymentSplits: Array.isArray(raw.paymentSplits) ? raw.paymentSplits.map((split) => ({
+        paymentType: cleanText(split.paymentType || ""),
+        dueDate: normalizeDate(split.dueDate || ""),
+        amount: numberToIt(split.amount),
+        amountEur: split.amount ?? decimalFromIt(split.amount),
+        bankReference: cleanText(split.bankReference || ""),
+      })) : [],
       taxable: numberToIt(raw.taxable),
       vat: numberToIt(raw.vat),
       total: numberToIt(raw.total),
@@ -1080,6 +1131,7 @@ function enrichInvoiceWithLocal(aiInvoice, localInvoice) {
   return {
     ...aiInvoice,
     documentType: preferValue(aiInvoice.documentType, localInvoice.documentType),
+    paymentSplits: (aiInvoice.paymentSplits && aiInvoice.paymentSplits.length) ? aiInvoice.paymentSplits : (localInvoice.paymentSplits || []),
     supplier: preferValue(aiInvoice.supplier, localInvoice.supplier),
     supplierVat: preferValue(aiInvoice.supplierVat, localInvoice.supplierVat),
     invoiceNumber: preferValue(aiInvoice.invoiceNumber, localInvoice.invoiceNumber),

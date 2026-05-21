@@ -282,6 +282,14 @@ function matchTooltip(record) {
   const lines = [];
   lines.push(`Bonifico proposto: ${debug.summary || "Nessuno"}`);
   lines.push(`Punteggio match: ${debug.score ?? 0}/${debug.threshold ?? 0}`);
+  if (debug.paymentPlanSummary) lines.push(`Piano pagamenti: ${debug.paymentPlanSummary}`);
+  if (Array.isArray(debug.paymentPlanSplits) && debug.paymentPlanSplits.length) {
+    lines.push(`Quote: ${debug.paymentPlanSplits.map((split) => {
+      const paid = Number.isFinite(split.paid) ? split.paid.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0,00";
+      const remaining = Number.isFinite(split.remaining) ? split.remaining.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0,00";
+      return `${split.label} [pagato ${paid} €, residuo ${remaining} €]`;
+    }).join(" | ")}`);
+  }
   if (debug.reasons?.length) lines.push(`Segnali positivi: ${debug.reasons.join(" | ")}`);
   if (debug.issues?.length) lines.push(`Criticita: ${debug.issues.join(" | ")}`);
   if (debug.missingInvoiceFields?.length) lines.push(`Campi fattura mancanti: ${debug.missingInvoiceFields.join(" | ")}`);
@@ -296,7 +304,7 @@ function matchLabel(record) {
     return {
       badge: "Abbinato",
       tone: "good",
-      detail: `${debug.summary ? `Pagamento associato: ${debug.summary}` : "Pagamento associato correttamente"}${missingInvoiceFields.length ? ` | Campi fattura mancanti: ${missingInvoiceFields.join(", ")}` : ""}`,
+      detail: `${debug.summary ? `Pagamento associato: ${debug.summary}` : "Pagamento associato correttamente"}${debug.paymentPlanSummary ? ` | ${debug.paymentPlanSummary}` : ""}${missingInvoiceFields.length ? ` | Campi fattura mancanti: ${missingInvoiceFields.join(", ")}` : ""}`,
     };
   }
   if (debug.issues?.some((issue) => /nessun pagamento|non ha associato/i.test(issue))) {

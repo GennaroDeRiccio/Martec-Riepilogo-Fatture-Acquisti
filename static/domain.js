@@ -235,6 +235,136 @@ function normalizePaymentMethod(value = "") {
   return normalized;
 }
 
+function normalizeInvoicePaymentSplits(invoice = {}) {
+  return Array.isArray(invoice.paymentSplits)
+    ? invoice.paymentSplits
+      .map((split) => ({
+        paymentType: normalizePaymentMethod(split.paymentType || ""),
+        dueDate: normalizeDate(split.dueDate || ""),
+        amount: split.amount || "",
+        amountEur: split.amountEur ?? decimalFromIt(split.amount),
+        bankReference: cleanText(split.bankReference || ""),
+      }))
+      .filter((split) => split.amountEur !== null && split.amountEur !== undefined)
+    : [];
+}
+
+function bestInvoiceSplitMatch(invoice = {}, transfer = {}) {
+  const splits = normalizeInvoicePaymentSplits(invoice);
+  if (!splits.length) return null;
+  const transferAmount = transfer.totalEur ?? decimalFromIt(transfer.total);
+  const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
+  const transferDate = normalizeDate(transfer.dueDate || transfer.executionDate || transfer.documentDate || "");
+  const ranked = splits.map((split) => {
+    let score = 0;
+    if (transferMethod && split.paymentType && transferMethod === split.paymentType) score += 50;
+    if (transferAmount !== null && split.amountEur !== null && Math.abs(split.amountEur - transferAmount) < 0.00001) score += 80;
+    if (transferDate && split.dueDate && transferDate === split.dueDate) score += 60;
+    return { split, score };
+  }).sort((left, right) => right.score - left.score);
+  return ranked[0]?.score ? ranked[0] : null;
+}
+
+function sortSplitsByDueDate(splits = []) {
+  return [...splits].sort((left, right) => {
+    const leftDate = normalizeDate(left.dueDate || "");
+    const rightDate = normalizeDate(right.dueDate || "");
+    if (!leftDate && !rightDate) return 0;
+    if (!leftDate) return 1;
+    if (!rightDate) return -1;
+    const [ld, lm, ly] = leftDate.split("/").map(Number);
+    const [rd, rm, ry] = rightDate.split("/").map(Number);
+    return new Date(ly, lm - 1, ld) - new Date(ry, rm - 1, rd);
+  });
+}
+
+function splitLabel(split = {}) {
+  const parts = [];
+  if (split.paymentType) parts.push(split.paymentType);
+  if (split.amountEur !== null && split.amountEur !== undefined) parts.push(`${decimalToIt(split.amountEur)} €`);
+  if (split.dueDate) parts.push(split.dueDate);
+  return parts.join(" - ");
+}
+
+function allocateTransfersToInvoiceSplits(invoice = {}, transfers = []) {
+  const splits = sortSplitsByDueDate(normalizeInvoicePaymentSplits(invoice));
+  if (!splits.length) {
+    return {
+      splits: [],
+      paidSplits: [],
+      unpaidSplits: [],
+      partialSplits: [],
+      matchedTransfers: [],
+      summary: "",
+    };
+  }
+
+  const remaining = splits.map((split, index) => ({
+    ...split,
+    index,
+    remaining: split.amountEur ?? 0,
+    paid: 0,
+    transfers: [],
+  }));
+
+  const normalizedTransfers = normalizeTransfers(transfers)
+    .map((transfer) => ({
+      ...transfer,
+      totalEur: transfer.totalEur ?? decimalFromIt(transfer.total),
+    }))
+    .filter((transfer) => transfer.totalEur !== null && transfer.totalEur !== undefined);
+
+  const assignedTransfers = [];
+  for (const transfer of normalizedTransfers) {
+    const ranked = remaining
+      .filter((split) => split.remaining > 0.00001)
+      .map((split) => {
+        let score = 0;
+        const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
+        if (split.paymentType && transferMethod && split.paymentType === transferMethod) score += 50;
+        if (Math.abs((split.amountEur ?? 0) - transfer.totalEur) < 0.00001) score += 80;
+        if (Math.abs((split.remaining ?? 0) - transfer.totalEur) < 0.00001) score += 70;
+        if (split.dueDate && normalizeDate(split.dueDate) === transferDateLabel(transfer)) score += 60;
+        return { split, score };
+      })
+      .sort((left, right) => right.score - left.score);
+
+    const best = ranked[0];
+    if (!best || best.score <= 0) continue;
+
+    const allocation = Math.min(best.split.remaining, transfer.totalEur);
+    best.split.remaining = Math.max(0, best.split.remaining - allocation);
+    best.split.paid += allocation;
+    best.split.transfers.push({
+      ...transfer,
+      allocatedAmount: allocation,
+    });
+    assignedTransfers.push({
+      transfer,
+      splitIndex: best.split.index,
+      allocatedAmount: allocation,
+    });
+  }
+
+  const paidSplits = remaining.filter((split) => split.remaining <= 0.00001);
+  const partialSplits = remaining.filter((split) => split.paid > 0.00001 && split.remaining > 0.00001);
+  const unpaidSplits = remaining.filter((split) => split.paid <= 0.00001 && split.remaining > 0.00001);
+  const summaryParts = [
+    paidSplits.length ? `${paidSplits.length} quota/e saldate` : "",
+    partialSplits.length ? `${partialSplits.length} quota/e parziali` : "",
+    unpaidSplits.length ? `${unpaidSplits.length} quota/e ancora aperte` : "",
+  ].filter(Boolean);
+
+  return {
+    splits: remaining,
+    paidSplits,
+    partialSplits,
+    unpaidSplits,
+    matchedTransfers: assignedTransfers,
+    summary: summaryParts.join(" | "),
+  };
+}
+
 export function normalizePaidValue(value) {
   const text = String(value || "").trim().toUpperCase();
   return ["X", "XX", "✅", "SI", "SÌ", "PAGATO", "PAGATA"].includes(text) ? "✅" : "❌";
@@ -340,8 +470,13 @@ function bankAccountLabel(invoice, transfers) {
 }
 
 function paymentTermsLabel(invoice, transfers) {
+  const splitPlan = allocateTransfersToInvoiceSplits(invoice, transfers);
+  const splitMethods = uniqueNonEmpty(splitPlan.splits.map((split) => split.paymentType));
   if (isInstantPaidMethod(invoice.paymentTerms)) {
     return `${invoice.paymentTerms} in data ${invoice.invoiceDate || ""}`.trim();
+  }
+  if (splitMethods.length > 1) {
+    return splitMethods.join(" + ");
   }
   const method = normalizePaymentMethod(invoice.paymentTerms || transfers[0]?.paymentType);
   const datedTransfer = transfers.find((transfer) => transferDateLabel(transfer));
@@ -358,6 +493,7 @@ function isInstantPaidMethod(paymentTerms = "") {
 
 export function recalculateRecord(invoice, transfers, index, matchDebug = null, source = "upload") {
   const safeTransfers = normalizeTransfers(transfers);
+  const splitPlan = allocateTransfersToInvoiceSplits(invoice, safeTransfers);
   const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total);
   const invoicePayable = payableInvoiceAmount(invoice);
   const taxableEuro = invoice.taxableEur ?? decimalFromIt(invoice.taxable);
@@ -369,6 +505,11 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
   const transfersPaidAmount = safeTransfers.reduce((sum, transfer) => sum + (transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0), 0);
   const paidAmount = instantPaid ? (invoicePayable ?? invoiceTotal ?? transfersPaidAmount) : transfersPaidAmount;
   const remainingLabel = outstandingLabel(invoicePayable ?? invoiceTotal, paidAmount);
+  const nextDueDate = splitPlan.unpaidSplits[0]?.dueDate
+    || splitPlan.partialSplits[0]?.dueDate
+    || invoice.dueDate
+    || sortSplitsByDueDate(splitPlan.splits).at(-1)?.dueDate
+    || addDays(invoice.invoiceDate || "", 30);
   const row = normalizeRow({
     "Num.": String(index),
     Fornitore: invoice.supplier || safeTransfers[0]?.beneficiary || "",
@@ -381,7 +522,7 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
     Uscite: decimalToIt(paidAmount),
     "Da pagare ancora": remainingLabel,
     "Data fattura": invoice.invoiceDate || "",
-    Scadenza: invoice.dueDate || addDays(invoice.invoiceDate || "", 30),
+    Scadenza: nextDueDate,
     "BANCA - C/C": bankAccountLabel(invoice, safeTransfers),
     "Termini pagamento fattura": paymentTermsLabel(invoice, safeTransfers),
     Note: invoice.documentType === "Proforma" ? "Proforma" : "",
@@ -398,6 +539,12 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
   const mergedMatchDebug = {
     ...(matchDebug || invoice.matchDebug || {}),
     missingInvoiceFields,
+    paymentPlanSummary: splitPlan.summary,
+    paymentPlanSplits: splitPlan.splits.map((split) => ({
+      label: splitLabel(split),
+      paid: split.paid,
+      remaining: split.remaining,
+    })),
   };
   return {
     id: crypto.randomUUID(),
@@ -438,7 +585,8 @@ export function matchScore(invoice, transfer) {
   let score = 0;
   const reasons = [];
   const issues = [];
-  const invoiceMethod = normalizePaymentMethod(invoice.paymentTerms);
+  const splitMatch = bestInvoiceSplitMatch(invoice, transfer);
+  const invoiceMethod = splitMatch?.split?.paymentType || normalizePaymentMethod(invoice.paymentTerms);
   const transferMethod = normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method);
   const isRibaPair = invoiceMethod === "RIBA" || transferMethod === "RIBA";
   let anchors = 0;
@@ -471,26 +619,35 @@ export function matchScore(invoice, transfer) {
 
   const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total);
   const invoicePayable = payableInvoiceAmount(invoice);
+  const splitAmount = splitMatch?.split?.amountEur ?? null;
   const transferTotal = transfer.totalEur ?? decimalFromIt(transfer.total);
   const amountsMatchGross = invoiceTotal !== null && transferTotal !== null && Math.abs(invoiceTotal - transferTotal) < 0.00001;
   const amountsMatchNet = invoicePayable !== null && transferTotal !== null && Math.abs(invoicePayable - transferTotal) < 0.00001;
-  if (amountsMatchGross || amountsMatchNet) {
+  const amountsMatchSplit = splitAmount !== null && transferTotal !== null && Math.abs(splitAmount - transferTotal) < 0.00001;
+  if (amountsMatchGross || amountsMatchNet || amountsMatchSplit) {
     score += 40;
     anchors += 1;
-    reasons.push(amountsMatchNet && !amountsMatchGross
-      ? `Importo pagamento uguale al netto fattura dopo ritenuta (${decimalToIt(invoicePayable)} €)`
-      : "Importo bonifico uguale al totale fattura");
+    reasons.push(
+      amountsMatchSplit
+        ? `Importo pagamento uguale a una quota del piano pagamenti (${decimalToIt(splitAmount)} €)`
+        : amountsMatchNet && !amountsMatchGross
+          ? `Importo pagamento uguale al netto fattura dopo ritenuta (${decimalToIt(invoicePayable)} €)`
+          : "Importo bonifico uguale al totale fattura",
+    );
   } else {
-    issues.push("Importo diverso");
+    issues.push(splitMatch?.split
+      ? "Importo diverso da quota prevista e da totale fattura"
+      : "Importo diverso");
     if (isRibaPair) score -= 25;
   }
 
-  const dueDateMatches = Boolean(invoice.dueDate && transfer.dueDate && normalizeDate(invoice.dueDate) === normalizeDate(transfer.dueDate));
+  const dueDateBaseline = splitMatch?.split?.dueDate || invoice.dueDate;
+  const dueDateMatches = Boolean(dueDateBaseline && transfer.dueDate && normalizeDate(dueDateBaseline) === normalizeDate(transfer.dueDate));
   if (dueDateMatches) {
     score += 40;
     anchors += 1;
-    reasons.push("Scadenza effetto uguale alla scadenza fattura");
-  } else if (invoice.dueDate || transfer.dueDate) {
+    reasons.push(splitMatch?.split?.dueDate ? "Scadenza effetto uguale a una quota del piano pagamenti" : "Scadenza effetto uguale alla scadenza fattura");
+  } else if (dueDateBaseline || transfer.dueDate) {
     issues.push("Scadenza diversa");
     if (isRibaPair) score -= 25;
   }
