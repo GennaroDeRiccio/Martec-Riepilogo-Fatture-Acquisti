@@ -12,6 +12,8 @@ const pendingPaymentsTable = document.querySelector("#pendingPaymentsTable");
 const pendingSearchInput = document.querySelector("#pendingSearchInput");
 const pendingStatusFilter = document.querySelector("#pendingStatusFilter");
 const pendingCount = document.querySelector("#pendingCount");
+const selectAllPending = document.querySelector("#selectAllPending");
+const deleteSelectedPendingButton = document.querySelector("#deleteSelectedPendingButton");
 const toast = document.querySelector("#toast");
 const cloudSetup = document.querySelector("#cloudSetup");
 const toggleCloudSetupButton = document.querySelector("#toggleCloudSetupButton");
@@ -22,6 +24,7 @@ const saveCloudConfigButton = document.querySelector("#saveCloudConfigButton");
 
 let pendingPayments = [];
 let unsubscribe = null;
+const selectedPendingIds = new Set();
 
 function showToast(message) {
   toast.textContent = message;
@@ -86,14 +89,19 @@ function paymentDate(payment) {
 function renderPendingPayments() {
   const tbody = pendingPaymentsTable.querySelector("tbody");
   const visible = visiblePendingPayments();
+  const visibleIds = new Set(visible.map((entry) => entry.id));
+  [...selectedPendingIds].forEach((id) => {
+    if (!visibleIds.has(id) && !pendingPayments.some((entry) => entry.id === id)) selectedPendingIds.delete(id);
+  });
   tbody.innerHTML = "";
   pendingCount.textContent = visible.length;
+  updatePendingSelectionUi(visible);
 
   if (!visible.length) {
     const row = document.createElement("tr");
     row.className = "empty-row";
     const cell = document.createElement("td");
-    cell.colSpan = 11;
+    cell.colSpan = 12;
     cell.textContent = pendingPayments.length
       ? "Nessun pagamento in sospeso corrisponde ai filtri"
       : "Nessun pagamento in sospeso memorizzato";
@@ -105,6 +113,19 @@ function renderPendingPayments() {
   visible.forEach((entry) => {
     const payment = entry.payment || {};
     const row = document.createElement("tr");
+
+    const selection = document.createElement("td");
+    selection.className = "is-selection";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedPendingIds.has(entry.id);
+    checkbox.setAttribute("aria-label", `Seleziona pagamento ${payment.beneficiary || ""}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedPendingIds.add(entry.id);
+      else selectedPendingIds.delete(entry.id);
+      renderPendingPayments();
+    });
+    selection.appendChild(checkbox);
 
     const status = document.createElement("td");
     const statusBadge = document.createElement("span");
@@ -140,8 +161,18 @@ function renderPendingPayments() {
     row.appendChild(actions);
 
     row.prepend(status);
+    row.prepend(selection);
     tbody.appendChild(row);
   });
+}
+
+function updatePendingSelectionUi(visible = visiblePendingPayments()) {
+  const selectedVisible = visible.filter((entry) => selectedPendingIds.has(entry.id));
+  if (selectAllPending) {
+    selectAllPending.checked = visible.length > 0 && selectedVisible.length === visible.length;
+    selectAllPending.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visible.length;
+  }
+  if (deleteSelectedPendingButton) deleteSelectedPendingButton.disabled = selectedPendingIds.size === 0;
 }
 
 async function removePendingPayment(entry) {
@@ -153,6 +184,22 @@ async function removePendingPayment(entry) {
     showToast("Pagamento in sospeso eliminato");
   } catch (error) {
     showToast(error.message || "Eliminazione pagamento non riuscita");
+  }
+}
+
+async function removeSelectedPendingPayments() {
+  const selected = pendingPayments.filter((entry) => selectedPendingIds.has(entry.id));
+  if (!selected.length) return;
+  if (!window.confirm(`Vuoi eliminare ${selected.length} pagamenti in sospeso selezionati?`)) return;
+  try {
+    for (const entry of selected) {
+      await deletePendingPayment(entry.id);
+    }
+    selectedPendingIds.clear();
+    await loadPendingPayments();
+    showToast(`${selected.length} pagamenti eliminati`);
+  } catch (error) {
+    showToast(error.message || "Eliminazione pagamenti non riuscita");
   }
 }
 
@@ -208,6 +255,14 @@ toggleCloudSetupButton?.addEventListener("click", () => {
   }, isHidden);
 });
 
+selectAllPending?.addEventListener("change", () => {
+  visiblePendingPayments().forEach((entry) => {
+    if (selectAllPending.checked) selectedPendingIds.add(entry.id);
+    else selectedPendingIds.delete(entry.id);
+  });
+  renderPendingPayments();
+});
+deleteSelectedPendingButton?.addEventListener("click", removeSelectedPendingPayments);
 pendingSearchInput.addEventListener("input", renderPendingPayments);
 pendingStatusFilter.addEventListener("input", renderPendingPayments);
 

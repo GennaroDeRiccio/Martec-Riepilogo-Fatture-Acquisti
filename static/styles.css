@@ -199,6 +199,18 @@ body {
   color: #fff;
 }
 
+.button.compact {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 10px;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
 .hidden {
   display: none !important;
 }
@@ -466,6 +478,29 @@ body {
   width: 100%;
 }
 
+.bulk-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.bulk-toolbar span {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .table-scroll {
   width: 100%;
   overflow: auto;
@@ -706,6 +741,23 @@ td.is-actions {
   width: 98px;
   white-space: nowrap;
   text-align: center;
+}
+
+th.is-selection,
+td.is-selection {
+  min-width: 44px;
+  width: 44px;
+  max-width: 44px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.is-selection input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+  cursor: pointer;
 }
 
 .row-delete {

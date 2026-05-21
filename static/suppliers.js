@@ -11,6 +11,8 @@ import {
 const suppliersTable = document.querySelector("#suppliersTable");
 const supplierSearchInput = document.querySelector("#supplierSearchInput");
 const suppliersCount = document.querySelector("#suppliersCount");
+const selectAllSuppliers = document.querySelector("#selectAllSuppliers");
+const deleteSelectedSuppliersButton = document.querySelector("#deleteSelectedSuppliersButton");
 const toast = document.querySelector("#toast");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
@@ -19,6 +21,7 @@ const saveCloudConfigButton = document.querySelector("#saveCloudConfigButton");
 
 let suppliers = [];
 let unsubscribe = null;
+const selectedSupplierIds = new Set();
 
 function showToast(message) {
   toast.textContent = message;
@@ -38,13 +41,18 @@ function filteredSuppliers() {
 function renderSuppliers() {
   const tbody = suppliersTable.querySelector("tbody");
   const visible = filteredSuppliers();
+  const visibleIds = new Set(visible.map((supplier) => supplier.id));
+  [...selectedSupplierIds].forEach((id) => {
+    if (!visibleIds.has(id) && !suppliers.some((supplier) => supplier.id === id)) selectedSupplierIds.delete(id);
+  });
   tbody.innerHTML = "";
   suppliersCount.textContent = visible.length;
+  updateSupplierSelectionUi(visible);
   if (!visible.length) {
     const row = document.createElement("tr");
     row.className = "empty-row";
     const cell = document.createElement("td");
-    cell.colSpan = 6;
+    cell.colSpan = 8;
     cell.textContent = suppliers.length ? "Nessun fornitore corrisponde alla ricerca" : "Archivio fornitori vuoto";
     row.appendChild(cell);
     tbody.appendChild(row);
@@ -52,6 +60,19 @@ function renderSuppliers() {
   }
   visible.forEach((supplier) => {
     const row = document.createElement("tr");
+    const selection = document.createElement("td");
+    selection.className = "is-selection";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedSupplierIds.has(supplier.id);
+    checkbox.setAttribute("aria-label", `Seleziona ${supplier.name || "fornitore"}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedSupplierIds.add(supplier.id);
+      else selectedSupplierIds.delete(supplier.id);
+      renderSuppliers();
+    });
+    selection.appendChild(checkbox);
+    row.appendChild(selection);
     ["name", "vat", "iban", "swift", "bank", "currency"].forEach((key) => {
       const td = document.createElement("td");
       td.textContent = supplier[key] || "";
@@ -69,6 +90,15 @@ function renderSuppliers() {
   });
 }
 
+function updateSupplierSelectionUi(visible = filteredSuppliers()) {
+  const selectedVisible = visible.filter((supplier) => selectedSupplierIds.has(supplier.id));
+  if (selectAllSuppliers) {
+    selectAllSuppliers.checked = visible.length > 0 && selectedVisible.length === visible.length;
+    selectAllSuppliers.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visible.length;
+  }
+  if (deleteSelectedSuppliersButton) deleteSelectedSuppliersButton.disabled = selectedSupplierIds.size === 0;
+}
+
 async function removeSupplier(supplier) {
   if (!window.confirm(`Vuoi eliminare il fornitore ${supplier.name || "selezionato"}?`)) return;
   try {
@@ -77,6 +107,22 @@ async function removeSupplier(supplier) {
     showToast("Fornitore eliminato");
   } catch (error) {
     showToast(error.message || "Eliminazione fornitore non riuscita");
+  }
+}
+
+async function removeSelectedSuppliers() {
+  const selected = suppliers.filter((supplier) => selectedSupplierIds.has(supplier.id));
+  if (!selected.length) return;
+  if (!window.confirm(`Vuoi eliminare ${selected.length} fornitori selezionati?`)) return;
+  try {
+    for (const supplier of selected) {
+      await deleteSupplier(supplier.id);
+    }
+    selectedSupplierIds.clear();
+    await loadSuppliers();
+    showToast(`${selected.length} fornitori eliminati`);
+  } catch (error) {
+    showToast(error.message || "Eliminazione fornitori non riuscita");
   }
 }
 
@@ -111,6 +157,14 @@ saveCloudConfigButton.addEventListener("click", async () => {
   showToast("Connessione cloud salvata");
 });
 
+selectAllSuppliers?.addEventListener("change", () => {
+  filteredSuppliers().forEach((supplier) => {
+    if (selectAllSuppliers.checked) selectedSupplierIds.add(supplier.id);
+    else selectedSupplierIds.delete(supplier.id);
+  });
+  renderSuppliers();
+});
+deleteSelectedSuppliersButton?.addEventListener("click", removeSelectedSuppliers);
 supplierSearchInput.addEventListener("input", renderSuppliers);
 showSetupState({ cloudSetup, urlInput: supabaseUrlInput, keyInput: supabaseAnonKeyInput }, !isCloudConfigured());
 initCloud().catch((error) => showToast(error.message || "Connessione cloud non riuscita"));

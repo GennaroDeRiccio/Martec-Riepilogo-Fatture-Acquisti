@@ -82,12 +82,16 @@
         <section class="suppliers-shell" aria-label="Archivio pagamenti in sospeso">
           <div class="section-heading">
             <h2>Pagamenti memorizzati</h2>
-            <span id="pendingCount">0</span>
+            <div class="heading-actions">
+              <span id="pendingCount">0</span>
+              <button class="button danger compact" id="deleteSelectedPendingButton" type="button" disabled>Elimina selezionati</button>
+            </div>
           </div>
           <div class="table-scroll">
             <table id="pendingPaymentsTable">
               <thead>
                 <tr>
+                  <th class="is-selection"><input id="selectAllPending" type="checkbox" aria-label="Seleziona tutti i pagamenti visibili"></th>
                   <th>Stato</th>
                   <th>Tipo</th>
                   <th>Fornitore pagato</th>

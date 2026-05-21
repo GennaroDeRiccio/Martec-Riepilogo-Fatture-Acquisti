@@ -184,7 +184,7 @@ function isRibaTransfer(transfer = {}) {
 }
 
 function cloneTransferForInvoice(transfer, invoice, sharedTotal) {
-  const invoiceTotal = invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
+  const invoiceTotal = payableInvoiceAmount(invoice) ?? invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
   return {
     ...transfer,
     total: decimalToIt(invoiceTotal),
@@ -195,6 +195,39 @@ function cloneTransferForInvoice(transfer, invoice, sharedTotal) {
     splitFromRiba: true,
     splitInvoiceNumber: invoice.invoiceNumber || "",
   };
+}
+
+function invoicePaymentTarget(invoice = {}) {
+  return payableInvoiceAmount(invoice) ?? invoice.totalEur ?? decimalFromIt(invoice.total) ?? 0;
+}
+
+function findMatchingInvoiceSubset(candidates = [], targetTotal = 0) {
+  const meaningful = candidates
+    .map((entry) => ({ ...entry, amount: invoicePaymentTarget(entry.invoice) }))
+    .filter((entry) => entry.amount > 0);
+  if (!meaningful.length || !targetTotal) return [];
+
+  let best = [];
+  const limit = Math.min(meaningful.length, 16);
+  const visit = (index, selected, sum) => {
+    if (Math.abs(sum - targetTotal) <= 0.01) {
+      if (
+        selected.length > best.length
+        || (
+          selected.length === best.length
+          && selected.reduce((total, entry) => total + entry.match.score, 0) > best.reduce((total, entry) => total + entry.match.score, 0)
+        )
+      ) {
+        best = [...selected];
+      }
+      return;
+    }
+    if (index >= limit || sum > targetTotal + 0.01) return;
+    visit(index + 1, [...selected, meaningful[index]], sum + meaningful[index].amount);
+    visit(index + 1, selected, sum);
+  };
+  visit(0, [], 0);
+  return best;
 }
 
 function expandRibaTransfers(invoices, transfers) {
@@ -218,18 +251,18 @@ function expandRibaTransfers(invoices, transfers) {
       continue;
     }
 
-    const sumTotals = candidates.reduce((sum, entry) => sum + (entry.invoice.totalEur ?? decimalFromIt(entry.invoice.total) ?? 0), 0);
     const transferTotal = transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0;
-    if (Math.abs(sumTotals - transferTotal) > 0.01) {
+    const exactCandidates = findMatchingInvoiceSubset(candidates, transferTotal);
+    if (exactCandidates.length < 2) {
       expanded.push(transfer);
       continue;
     }
 
-    const splitInvoices = candidates
+    const splitInvoices = exactCandidates
       .map((entry) => entry.invoice.invoiceNumber || "")
       .filter(Boolean)
       .join(", ");
-    candidates.forEach((entry) => {
+    exactCandidates.forEach((entry) => {
       expanded.push(cloneTransferForInvoice(transfer, entry.invoice, splitInvoices));
     });
   }

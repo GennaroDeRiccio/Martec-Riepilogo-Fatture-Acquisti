@@ -48,6 +48,8 @@ const invoiceDateTo = document.querySelector("#invoiceDateTo");
 const dueDateFrom = document.querySelector("#dueDateFrom");
 const dueDateTo = document.querySelector("#dueDateTo");
 const exportExcelButton = document.querySelector("#exportExcelButton");
+const recordsSelectionCount = document.querySelector("#recordsSelectionCount");
+const deleteSelectedRecordsButton = document.querySelector("#deleteSelectedRecordsButton");
 const toggleCloudSetupButton = document.querySelector("#toggleCloudSetupButton");
 const cloudSetup = document.querySelector("#cloudSetup");
 const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
@@ -59,6 +61,7 @@ let columns = getColumns();
 let records = [];
 let pendingPayments = [];
 let unsubscribe = null;
+const selectedRecordIds = new Set();
 
 const compactColumns = new Set([
   "Num.",
@@ -337,6 +340,13 @@ function renderTable() {
   tbody.innerHTML = "";
 
   const headerRow = document.createElement("tr");
+  const selectionHeader = document.createElement("th");
+  selectionHeader.className = "is-selection";
+  const selectAll = document.createElement("input");
+  selectAll.type = "checkbox";
+  selectAll.setAttribute("aria-label", "Seleziona tutte le righe visibili");
+  selectionHeader.appendChild(selectAll);
+  headerRow.appendChild(selectionHeader);
   for (const column of [...columns, "Stato", "Match", "Azioni"]) {
     const th = document.createElement("th");
     th.textContent = column;
@@ -350,21 +360,48 @@ function renderTable() {
   thead.appendChild(headerRow);
 
   const visible = filteredRecords();
+  const visibleIds = new Set(visible.map((record) => record.id));
+  [...selectedRecordIds].forEach((id) => {
+    if (!visibleIds.has(id) && !records.some((record) => record.id === id)) selectedRecordIds.delete(id);
+  });
+  selectAll.checked = visible.length > 0 && visible.every((record) => selectedRecordIds.has(record.id));
+  selectAll.indeterminate = visible.some((record) => selectedRecordIds.has(record.id)) && !selectAll.checked;
+  selectAll.addEventListener("change", () => {
+    visible.forEach((record) => {
+      if (selectAll.checked) selectedRecordIds.add(record.id);
+      else selectedRecordIds.delete(record.id);
+    });
+    renderTable();
+  });
   if (!visible.length) {
     const row = document.createElement("tr");
     row.className = "empty-row";
     const cell = document.createElement("td");
-    cell.colSpan = columns.length + 3;
+    cell.colSpan = columns.length + 4;
     cell.textContent = records.length ? "Nessuna riga corrisponde ai filtri" : "Nessuna fattura caricata";
     row.appendChild(cell);
     tbody.appendChild(row);
     updateMetrics();
+    updateRecordSelectionUi();
     return;
   }
 
   for (const record of visible) {
     const row = document.createElement("tr");
     row.dataset.id = record.id;
+    const selection = document.createElement("td");
+    selection.className = "is-selection";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedRecordIds.has(record.id);
+    checkbox.setAttribute("aria-label", `Seleziona riga ${record.row?.["Num."] || ""}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedRecordIds.add(record.id);
+      else selectedRecordIds.delete(record.id);
+      renderTable();
+    });
+    selection.appendChild(checkbox);
+    row.appendChild(selection);
     for (const column of columns) {
       const td = document.createElement("td");
       td.dataset.column = column;
@@ -405,6 +442,13 @@ function renderTable() {
     tbody.appendChild(row);
   }
   updateMetrics();
+  updateRecordSelectionUi();
+}
+
+function updateRecordSelectionUi() {
+  const count = selectedRecordIds.size;
+  if (recordsSelectionCount) recordsSelectionCount.textContent = `${count} selezionat${count === 1 ? "a" : "e"}`;
+  if (deleteSelectedRecordsButton) deleteSelectedRecordsButton.disabled = count === 0;
 }
 
 async function loadRecords() {
@@ -534,6 +578,22 @@ async function removeRecord(record) {
     showToast("Riga eliminata");
   } catch (error) {
     showToast(error.message || "Eliminazione non riuscita");
+  }
+}
+
+async function removeSelectedRecords() {
+  const selected = records.filter((record) => selectedRecordIds.has(record.id));
+  if (!selected.length) return;
+  if (!window.confirm(`Vuoi eliminare ${selected.length} righe selezionate?`)) return;
+  try {
+    for (const record of selected) {
+      await deleteRecord(record.id);
+    }
+    selectedRecordIds.clear();
+    await loadRecords();
+    showToast(`${selected.length} righe eliminate`);
+  } catch (error) {
+    showToast(error.message || "Eliminazione selezionate non riuscita");
   }
 }
 
@@ -750,6 +810,8 @@ exportExcelButton.addEventListener("click", async (event) => {
     showToast(error.message || "Export non riuscito");
   }
 });
+
+deleteSelectedRecordsButton?.addEventListener("click", removeSelectedRecords);
 
 saveCloudConfigButton.addEventListener("click", async () => {
   const url = supabaseUrlInput.value.trim();

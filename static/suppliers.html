@@ -67,12 +67,16 @@
         <section class="suppliers-shell" aria-label="Archivio fornitori">
           <div class="section-heading">
             <h2>Fornitori registrati</h2>
-            <span id="suppliersCount">0</span>
+            <div class="heading-actions">
+              <span id="suppliersCount">0</span>
+              <button class="button danger compact" id="deleteSelectedSuppliersButton" type="button" disabled>Elimina selezionati</button>
+            </div>
           </div>
           <div class="table-scroll">
             <table id="suppliersTable">
               <thead>
                 <tr>
+                  <th class="is-selection"><input id="selectAllSuppliers" type="checkbox" aria-label="Seleziona tutti i fornitori visibili"></th>
                   <th>Fornitore</th>
                   <th>P. IVA</th>
                   <th>IBAN</th>
