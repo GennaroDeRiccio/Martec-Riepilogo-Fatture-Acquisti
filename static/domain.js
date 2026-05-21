@@ -384,17 +384,26 @@ export function recalculateRecord(invoice, transfers, index, matchDebug = null, 
     Scadenza: invoice.dueDate || addDays(invoice.invoiceDate || "", 30),
     "BANCA - C/C": bankAccountLabel(invoice, safeTransfers),
     "Termini pagamento fattura": paymentTermsLabel(invoice, safeTransfers),
-    Note: "",
+    Note: invoice.documentType === "Proforma" ? "Proforma" : "",
   });
+  const missingInvoiceFields = [
+    !taxableEuro && taxableEuro !== 0 ? "imponibile" : "",
+    !vatEuro && vatEuro !== 0 ? "IVA" : "",
+    !invoiceTotal && invoiceTotal !== 0 ? "totale" : "",
+  ].filter(Boolean);
   const checks = [
     { label: "Importo", ok: String(remainingLabel).toUpperCase() === "PAGATO" },
     { label: "Pagamento registrato", ok: instantPaid || safeTransfers.length > 0 },
   ];
+  const mergedMatchDebug = {
+    ...(matchDebug || invoice.matchDebug || {}),
+    missingInvoiceFields,
+  };
   return {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     row,
-    invoice: { ...invoice, matchDebug: matchDebug || invoice.matchDebug || null },
+    invoice: { ...invoice, matchDebug: mergedMatchDebug },
     transfer: safeTransfers[0] || {},
     transfers: safeTransfers,
     checks,

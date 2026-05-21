@@ -381,6 +381,7 @@ Regole fondamentali:
 - Se nello stesso upload trovi due versioni della stessa fattura (ad esempio XML PDF e copia di cortesia con stesso fornitore, numero, data e totale), considera una sola fattura logica.
 - Se una fattura contiene note commerciali o causali narrative che citano pagamenti futuri (ad esempio RIBA o saldi successivi), dai priorita' ai campi strutturati del documento corrente come Modalita' pagamento, codice MP, numero fattura, totale e causale del bonifico effettivo.
 - Se una fattura contiene una ritenuta d'acconto, estrai anche l'importo ritenuta. In questi casi il pagamento completo puo' essere inferiore al totale documento: usa come importo da saldare il netto \`totale documento - ritenuta\`.
+- Se il documento e' una proforma, trattalo comunque come riga valida ma segnalo come documentType = "Proforma".
 - Usa importi numerici senza simboli valuta.
 - Usa date nel formato DD/MM/YYYY quando possibile.
 
@@ -560,6 +561,12 @@ function detectInvoicePaymentMethod(fullText, explicitValue = "") {
   return cleanText(explicitValue || "");
 }
 
+function detectInvoiceDocumentType(fullText = "", fileName = "") {
+  const source = `${fileName}\n${fullText}`.toUpperCase();
+  if (/PROFORMA|PRO FORMA|PRF/.test(source)) return "Proforma";
+  return "Fattura";
+}
+
 export async function parseRibaEffects(file) {
   const items = await extractPdfItems(file);
   const fullText = linesFromItems(items).join("\n");
@@ -677,6 +684,7 @@ export async function parseInvoice(file) {
   const explicitPaymentTerms = valueOnSameRow(items, "Modalità pagamento")
     || firstMatch("Modalità pagamento\\s+(.+)", fullText, "i");
   const paymentTerms = detectInvoicePaymentMethod(fullText, explicitPaymentTerms);
+  const documentType = detectInvoiceDocumentType(fullText, file?.name || "");
   const explicitCurrency = firstMatch("Divisa\\s+([A-Z]{3})", fullText, "i");
   const currency = detectDocumentCurrency(fullText, explicitCurrency);
   const amounts = await normalizeCurrencyAmounts({
@@ -701,6 +709,7 @@ export async function parseInvoice(file) {
     iban,
     dueDate: normalizeDate(dueDate),
     paymentTerms,
+    documentType,
     rawText: fullText,
   };
 }
@@ -1018,6 +1027,7 @@ async function normalizeAiDocument(raw) {
       supplierVat: cleanText(raw.supplierVat),
       invoiceNumber: cleanText(raw.invoiceNumber),
       invoiceDate: normalizeDate(raw.invoiceDate),
+      documentType: cleanText(raw.documentType || ""),
       taxable: numberToIt(raw.taxable),
       vat: numberToIt(raw.vat),
       total: numberToIt(raw.total),
@@ -1069,6 +1079,7 @@ function enrichInvoiceWithLocal(aiInvoice, localInvoice) {
   const withholding = preferValue(aiInvoice.withholding, localInvoice.withholding);
   return {
     ...aiInvoice,
+    documentType: preferValue(aiInvoice.documentType, localInvoice.documentType),
     supplier: preferValue(aiInvoice.supplier, localInvoice.supplier),
     supplierVat: preferValue(aiInvoice.supplierVat, localInvoice.supplierVat),
     invoiceNumber: preferValue(aiInvoice.invoiceNumber, localInvoice.invoiceNumber),

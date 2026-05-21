@@ -284,30 +284,32 @@ function matchTooltip(record) {
   lines.push(`Punteggio match: ${debug.score ?? 0}/${debug.threshold ?? 0}`);
   if (debug.reasons?.length) lines.push(`Segnali positivi: ${debug.reasons.join(" | ")}`);
   if (debug.issues?.length) lines.push(`Criticita: ${debug.issues.join(" | ")}`);
+  if (debug.missingInvoiceFields?.length) lines.push(`Campi fattura mancanti: ${debug.missingInvoiceFields.join(" | ")}`);
   return lines.join("\n");
 }
 
 function matchLabel(record) {
   const debug = record.matchDebug;
+  const missingInvoiceFields = Array.isArray(debug?.missingInvoiceFields) ? debug.missingInvoiceFields.filter(Boolean) : [];
   if (!debug) return { badge: "Nessun controllo", tone: "warn", detail: "Nessun dettaglio disponibile" };
   if (debug.matched) {
     return {
       badge: "Abbinato",
       tone: "good",
-      detail: debug.summary ? `Pagamento associato: ${debug.summary}` : "Pagamento associato correttamente",
+      detail: `${debug.summary ? `Pagamento associato: ${debug.summary}` : "Pagamento associato correttamente"}${missingInvoiceFields.length ? ` | Campi fattura mancanti: ${missingInvoiceFields.join(", ")}` : ""}`,
     };
   }
   if (debug.issues?.some((issue) => /nessun pagamento|non ha associato/i.test(issue))) {
     return {
       badge: "In attesa",
       tone: "warn",
-      detail: "Nessun pagamento associato: controlla Pagamenti in sospeso",
+      detail: `Nessun pagamento associato: controlla Pagamenti in sospeso${missingInvoiceFields.length ? ` | Campi fattura mancanti: ${missingInvoiceFields.join(", ")}` : ""}`,
     };
   }
   return {
     badge: "Da verificare",
     tone: "danger",
-    detail: debug.summary ? `Abbinamento da verificare: ${debug.summary}` : "Abbinamento da verificare manualmente",
+    detail: `${debug.summary ? `Abbinamento da verificare: ${debug.summary}` : "Abbinamento da verificare manualmente"}${missingInvoiceFields.length ? ` | Campi fattura mancanti: ${missingInvoiceFields.join(", ")}` : ""}`,
   };
 }
 
