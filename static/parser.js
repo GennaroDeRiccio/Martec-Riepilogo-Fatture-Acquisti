@@ -899,6 +899,14 @@ function parsePaymentSplits(fullText) {
   return [...byKey.values()];
 }
 
+function referenceBlockFromRibaEffect(block = "") {
+  return cleanText([
+    firstMatch("Riferimento Operazione\\s+(.+?)(?:\\s+Debitore|\\s+Importo|\\s+Scadenza|$)", block, "is"),
+    ...[...String(block || "").matchAll(/\b(?:FT|FAT|FATT|FATTURA|VEN|NR|N)\b[^\dA-Z]{0,8}[A-Z0-9./-]{3,30}/gi)].map((match) => match[0]),
+    ...[...String(block || "").matchAll(/\b[A-Z]{0,5}0*\d{5,}[A-Z]{0,5}\b/g)].map((match) => match[0]),
+  ].filter(Boolean).join(" "));
+}
+
 export async function parseRibaEffects(file) {
   const items = await extractPdfItems(file);
   const fullText = linesFromItems(items).join("\n");
@@ -927,6 +935,7 @@ export async function parseRibaEffects(file) {
     const beneficiaryVat = firstMatch("Codice Fiscale \\/ Partita IVA\\s+([A-Z0-9]+)", block, "i");
     const noticeNumber = firstMatch("Numero avviso\\s+([0-9]+)", block, "i");
     const referenceOperation = firstMatch("Riferimento Operazione\\s+(.+)$", block, "is");
+    const referenceBlock = referenceBlockFromRibaEffect(block);
     if (!amount || !beneficiary) continue;
     effects.push({
       type: "transfer",
@@ -944,7 +953,8 @@ export async function parseRibaEffects(file) {
       beneficiaryVat: cleanText(beneficiaryVat),
       beneficiaryIban: "",
       swift: "",
-      reason: cleanText(referenceOperation),
+      reason: cleanText(referenceOperation || referenceBlock),
+      referenceBlock,
       noticeNumber: cleanText(noticeNumber),
       flowName: cleanText(flowName),
       rawText: fullText,

@@ -183,6 +183,28 @@ function reasonReferenceMatch(invoiceNumber = "", transfer = {}) {
   };
 }
 
+function referenceTokensForInvoice(invoice = {}) {
+  return invoiceReferenceVariants(invoice.invoiceNumber || "")
+    .map(normalizeKey)
+    .filter((token) => token.length >= 5 || /\d{5,}/.test(token));
+}
+
+function transferReferenceText(transfer = {}) {
+  return normalizeKey([
+    transfer.reason,
+    transfer.noticeNumber,
+    transfer.flowName,
+    transfer.rawText,
+    transfer.referenceBlock,
+  ].filter(Boolean).join(" "));
+}
+
+function invoiceIsExplicitlyReferenced(invoice = {}, transfer = {}) {
+  const referenceText = transferReferenceText(transfer);
+  if (!referenceText) return false;
+  return referenceTokensForInvoice(invoice).some((token) => referenceText.includes(token));
+}
+
 function isRibaTransfer(transfer = {}) {
   return normalizePaymentMethod(transfer.paymentType || transfer.paymentTerms || transfer.method) === "RIBA";
 }
@@ -236,7 +258,7 @@ function findMatchingInvoiceSubset(candidates = [], targetTotal = 0) {
 
 function explicitReferenceCandidates(candidates = [], targetTotal = 0) {
   const referenced = candidates
-    .filter((entry) => entry.ref?.strong)
+    .filter((entry) => entry.ref?.strong || invoiceIsExplicitlyReferenced(entry.invoice, entry.transfer))
     .map((entry) => ({ ...entry, amount: invoicePaymentTarget(entry.invoice) }))
     .filter((entry) => entry.amount > 0);
   if (referenced.length < 2) return [];
@@ -255,9 +277,9 @@ function expandRibaTransfers(invoices, transfers) {
       .map((invoice) => {
         const match = matchScore(invoice, transfer);
         const ref = reasonReferenceMatch(invoice.invoiceNumber, transfer);
-        return { invoice, match, ref };
+        return { invoice, transfer, match, ref };
       })
-      .filter((entry) => entry.ref.matched && entry.match.score >= MATCH_THRESHOLD)
+      .filter((entry) => (entry.ref.matched || invoiceIsExplicitlyReferenced(entry.invoice, transfer)) && entry.match.score >= MATCH_THRESHOLD)
       .sort((left, right) => right.match.score - left.match.score);
 
     if (candidates.length < 2) {
@@ -699,6 +721,12 @@ export function matchScore(invoice, transfer) {
       : `Riferimento compatibile trovato (${referenceMatch.fragment})`);
   } else {
     issues.push(isRibaPair ? "Riferimento fattura non trovato nell'effetto RIBA" : "Numero fattura non trovato nella causale");
+  }
+
+  if (!referenceMatch.matched && isRibaPair && invoiceIsExplicitlyReferenced(invoice, transfer)) {
+    score += 110;
+    anchors += 1;
+    reasons.push(`Riferimento documento trovato nel blocco RIBA (${invoice.invoiceNumber})`);
   }
 
   const ibanMatches = Boolean(invoice.iban && invoice.iban === transfer.beneficiaryIban);
