@@ -264,18 +264,24 @@ export async function replaceImportedRows(records) {
 }
 
 export async function uploadFilesToStorage(files) {
-  return withCloudError(async () => {
-    const config = getCloudConfig();
-    const batchId = crypto.randomUUID();
-    const uploads = [];
-    for (const file of files) {
-      const path = `${batchId}/${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
+  const config = getCloudConfig();
+  const batchId = crypto.randomUUID();
+  const uploads = [];
+  const failures = [];
+  for (const file of files) {
+    const path = `${batchId}/${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
+    try {
       const { error } = await getSupabase().storage.from(config.storageBucket).upload(path, file, { upsert: false });
       if (error) throw error;
       uploads.push({ fileName: file.name, path });
+    } catch (error) {
+      failures.push({
+        fileName: file.name,
+        error: normalizeCloudError(error),
+      });
     }
-    return uploads;
-  });
+  }
+  return { uploads, failures };
 }
 
 export function subscribeToChanges(onChange) {

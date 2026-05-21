@@ -579,7 +579,7 @@ uploadForm.addEventListener("submit", async (event) => {
   submitButton.textContent = "Estrazione...";
   setLoadingState(true, "Elaborazione documenti", "Sto caricando i file e preparando l'analisi AI.");
   try {
-    const uploads = await uploadFilesToStorage(files);
+    const { uploads, failures: uploadFailures } = await uploadFilesToStorage(files);
     setLoadingState(true, "Analisi AI in corso", "L'AI sta leggendo fatture e pagamenti per estrarre i dati e costruire gli abbinamenti.");
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
     const { matches, transfers, existingRecordMatches, pendingPaymentMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records, pendingPayments);
@@ -675,7 +675,8 @@ uploadForm.addEventListener("submit", async (event) => {
     const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
     const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "AI non disponibile";
     const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, documenti memorizzati senza abbinamento automatico` : "";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}`);
+    const uploadWarningText = uploadFailures?.length ? ` | ${uploadFailures.length} file non salvati nello storage cloud` : "";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}${uploadWarningText}`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {
