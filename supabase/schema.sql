@@ -96,6 +96,13 @@ to anon, authenticated
 using (true)
 with check (true);
 
+drop policy if exists "suppliers_delete_all" on public.suppliers;
+create policy "suppliers_delete_all"
+on public.suppliers
+for delete
+to anon, authenticated
+using (true);
+
 drop policy if exists "pending_payments_select_all" on public.pending_payments;
 create policy "pending_payments_select_all"
 on public.pending_payments

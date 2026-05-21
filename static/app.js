@@ -654,22 +654,31 @@ uploadForm.addEventListener("submit", async (event) => {
     ]);
     const unmatchedTransfers = transfers.filter((transfer) =>
       !matchedTransferKeys.has(transferIdentity(transfer)) && !knownTransferKeys.has(transferIdentity(transfer)));
+    let pendingWarning = "";
     if (unmatchedTransfers.length) {
-      await upsertPendingPayments(unmatchedTransfers.map((transfer) => ({
-        signature: transferIdentity(transfer),
-        status: String(transfer.paymentType || "").toUpperCase() === "RIBA" ? "pending_invoice" : "uncertain",
-        payment: transfer,
-        notes: String(transfer.paymentType || "").toUpperCase() === "RIBA"
-          ? "Pagamento RIBA in attesa della fattura corretta o di altri documenti collegati"
-          : "Pagamento non ancora associato a una fattura",
-      })));
+      try {
+        await upsertPendingPayments(unmatchedTransfers.map((transfer) => ({
+          signature: transferIdentity(transfer),
+          status: String(transfer.paymentType || "").toUpperCase() === "RIBA" ? "pending_invoice" : "uncertain",
+          payment: transfer,
+          notes: String(transfer.paymentType || "").toUpperCase() === "RIBA"
+            ? "Pagamento RIBA in attesa della fattura corretta o di altri documenti collegati"
+            : "Pagamento non ancora associato a una fattura",
+        })));
+      } catch (error) {
+        pendingWarning = " | alcuni pagamenti non sono stati salvati nei sospesi";
+      }
     }
     const matchedSignatures = [
       ...matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
       ...(pendingPaymentMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
       ...(existingRecordMatches || []).flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
     ];
-    await deletePendingPaymentsBySignatures(matchedSignatures);
+    try {
+      await deletePendingPaymentsBySignatures(matchedSignatures);
+    } catch {
+      pendingWarning = `${pendingWarning} | alcuni sospesi gia' associati non sono stati ripuliti`;
+    }
     await loadRecords();
     const attached = 0;
     uploadForm.reset();
@@ -684,7 +693,8 @@ uploadForm.addEventListener("submit", async (event) => {
     const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "AI non disponibile";
     const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, documenti memorizzati senza abbinamento automatico` : "";
     const uploadWarningText = uploadFailures?.length ? ` | ${uploadFailures.length} file non salvati nello storage cloud` : "";
-    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}${uploadWarningText}`);
+    const supplierWarningText = result.warnings?.length ? ` | ${result.warnings.length} fornitori non aggiornati in rubrica` : "";
+    showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}${uploadWarningText}${supplierWarningText}${pendingWarning}`);
   } catch (error) {
     showToast(error.message || "Upload non riuscito");
   } finally {

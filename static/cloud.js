@@ -145,6 +145,32 @@ export async function fetchPendingPayments() {
   });
 }
 
+export async function deleteSupplier(supplierId) {
+  return withCloudError(async () => {
+    const { error } = await getSupabase().from(SUPPLIERS_TABLE).delete().eq("id", supplierId);
+    if (error) throw error;
+  });
+}
+
+export async function deletePendingPayment(pendingId) {
+  return withCloudError(async () => {
+    const { error } = await getSupabase().from(PENDING_PAYMENTS_TABLE).delete().eq("id", pendingId);
+    if (error) throw error;
+  });
+}
+
+export async function clearAllCloudData() {
+  return withCloudError(async () => {
+    const supabase = getSupabase();
+    const { error: pendingError } = await supabase.from(PENDING_PAYMENTS_TABLE).delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (pendingError) throw pendingError;
+    const { error: recordsError } = await supabase.from(RECORDS_TABLE).delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (recordsError) throw recordsError;
+    const { error: suppliersError } = await supabase.from(SUPPLIERS_TABLE).delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    if (suppliersError) throw suppliersError;
+  });
+}
+
 export function nextRecordNumber(records) {
   return records.reduce((max, record) => Math.max(max, Number(record.row?.["Num."] || 0)), 0) + 1;
 }
@@ -173,6 +199,7 @@ export async function insertRecords(records) {
   return withCloudError(async () => {
     const added = [];
     const duplicates = [];
+    const warnings = [];
     for (const record of records) {
       const normalizedRow = normalizeRow(record.row || {});
       const payload = {
@@ -194,10 +221,14 @@ export async function insertRecords(records) {
         }
         throw error;
       }
-      await upsertSupplierFromRecord({ ...record, row: normalizedRow });
+      try {
+        await upsertSupplierFromRecord({ ...record, row: normalizedRow });
+      } catch (error) {
+        warnings.push(`Fornitore non aggiornato per ${normalizedRow.Fornitore || normalizedRow.Cliente || normalizedRow.Fattura || "record"}`);
+      }
       added.push(payload);
     }
-    return { added, duplicates };
+    return { added, duplicates, warnings };
   });
 }
 
@@ -220,11 +251,15 @@ export async function updateRecord(recordId, nextRow, options = {}) {
     };
     const { error } = await getSupabase().from(RECORDS_TABLE).update(payload).eq("id", recordId);
     if (error) throw error;
-    await upsertSupplierFromRecord({
-      row: normalizedRow,
-      invoice: existing.invoice_data || {},
-      transfers: normalizeTransfers(options.transferData || existing.transfer_data || {}),
-    });
+    try {
+      await upsertSupplierFromRecord({
+        row: normalizedRow,
+        invoice: existing.invoice_data || {},
+        transfers: normalizeTransfers(options.transferData || existing.transfer_data || {}),
+      });
+    } catch {
+      // Non bloccare l'aggiornamento della riga se la rubrica fornitori non riesce a sincronizzarsi.
+    }
   });
 }
 

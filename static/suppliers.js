@@ -1,4 +1,5 @@
 import {
+  deleteSupplier,
   fetchSuppliers,
   isCloudConfigured,
   resetCloudClient,
@@ -56,8 +57,27 @@ function renderSuppliers() {
       td.textContent = supplier[key] || "";
       row.appendChild(td);
     });
+    const actions = document.createElement("td");
+    const button = document.createElement("button");
+    button.className = "table-action";
+    button.type = "button";
+    button.textContent = "Elimina";
+    button.addEventListener("click", () => removeSupplier(supplier));
+    actions.appendChild(button);
+    row.appendChild(actions);
     tbody.appendChild(row);
   });
+}
+
+async function removeSupplier(supplier) {
+  if (!window.confirm(`Vuoi eliminare il fornitore ${supplier.name || "selezionato"}?`)) return;
+  try {
+    await deleteSupplier(supplier.id);
+    await loadSuppliers();
+    showToast("Fornitore eliminato");
+  } catch (error) {
+    showToast(error.message || "Eliminazione fornitore non riuscita");
+  }
 }
 
 async function loadSuppliers() {

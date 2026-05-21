@@ -1,4 +1,5 @@
 import {
+  deletePendingPayment,
   fetchPendingPayments,
   isCloudConfigured,
   resetCloudClient,
@@ -92,7 +93,7 @@ function renderPendingPayments() {
     const row = document.createElement("tr");
     row.className = "empty-row";
     const cell = document.createElement("td");
-    cell.colSpan = 10;
+    cell.colSpan = 11;
     cell.textContent = pendingPayments.length
       ? "Nessun pagamento in sospeso corrisponde ai filtri"
       : "Nessun pagamento in sospeso memorizzato";
@@ -129,9 +130,30 @@ function renderPendingPayments() {
       row.appendChild(td);
     });
 
+    const actions = document.createElement("td");
+    const button = document.createElement("button");
+    button.className = "table-action";
+    button.type = "button";
+    button.textContent = "Elimina";
+    button.addEventListener("click", () => removePendingPayment(entry));
+    actions.appendChild(button);
+    row.appendChild(actions);
+
     row.prepend(status);
     tbody.appendChild(row);
   });
+}
+
+async function removePendingPayment(entry) {
+  const label = entry.payment?.beneficiary || entry.payment?.reason || "questo pagamento";
+  if (!window.confirm(`Vuoi eliminare ${label}?`)) return;
+  try {
+    await deletePendingPayment(entry.id);
+    await loadPendingPayments();
+    showToast("Pagamento in sospeso eliminato");
+  } catch (error) {
+    showToast(error.message || "Eliminazione pagamento non riuscita");
+  }
 }
 
 async function loadPendingPayments() {
