@@ -3,6 +3,7 @@ import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build
 import {
   EXCEL_COLUMNS,
   EXPORT_TEMPLATE_COLUMNS,
+  MATCH_THRESHOLD,
   addDays,
   buildRecord,
   cleanText,
@@ -14,6 +15,7 @@ import {
   normalizeRow,
   normalizeTransfers,
   pairDocuments,
+  payableInvoiceAmount,
   recordFromImportedRow,
 } from "./domain.js";
 
@@ -26,6 +28,7 @@ const APP_CONFIG_KEY = "martec-cloud-config";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_REQUEST_TIMEOUT_MS = 90000;
 const GEMINI_RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const GEMINI_BATCH_SIZE = 3;
 
 function isFetchFailure(error) {
   return error instanceof TypeError || /Failed to fetch|Load failed|NetworkError/i.test(String(error?.message || error || ""));
@@ -313,6 +316,110 @@ function bestLocalRibaEffectForAllocation(invoice = {}, allocation = {}, aiTrans
   return candidates[0]?.score ? candidates[0].transfer : null;
 }
 
+function localInvoiceKey(invoice = {}) {
+  return [
+    normalizeKey(invoice.supplier || ""),
+    normalizeKey(invoice.invoiceNumber || ""),
+    normalizeKey(invoice.invoiceDate || ""),
+    normalizeKey(invoice.total || ""),
+  ].join("|");
+}
+
+function localRecordInvoiceKey(record = {}) {
+  return [
+    normalizeKey(record.row?.Fornitore || record.row?.Cliente || record.invoice?.supplier || ""),
+    normalizeKey(record.row?.Fattura || record.invoice?.invoiceNumber || ""),
+    normalizeKey(record.row?.["Data fattura"] || record.invoice?.invoiceDate || ""),
+    normalizeKey(record.row?.Totale || record.invoice?.total || ""),
+  ].join("|");
+}
+
+function localDuplicateInvoices(invoices = [], existingRecords = []) {
+  const recordByKey = new Map(existingRecords.map((record) => [localRecordInvoiceKey(record), record]).filter(([key]) => key.replace(/\|/g, "")));
+  return invoices
+    .map((invoice) => {
+      const record = recordByKey.get(localInvoiceKey(invoice));
+      return record ? {
+        invoiceDocumentId: invoice.aiId,
+        existingRecordId: record.id,
+        rationale: "Fattura gia' presente in archivio secondo chiave fornitore/numero/data/totale",
+      } : null;
+    })
+    .filter(Boolean);
+}
+
+function localPendingMatches(localPairs = [], pendingPayments = []) {
+  const pendingSignatures = new Map((pendingPayments || []).map((entry) => [transferMergeKey(entry.payment || {}), entry.signature]));
+  return localPairs
+    .map((pair) => {
+      const pendingAllocations = (pair.transfers || [])
+        .map((transfer) => {
+          const signature = pendingSignatures.get(transferMergeKey(transfer));
+          if (!signature) return null;
+          return {
+            pendingSignature: signature,
+            allocatedAmount: transfer.totalEur ?? decimalFromIt(transfer.total) ?? 0,
+          };
+        })
+        .filter(Boolean);
+      return pendingAllocations.length ? {
+        invoiceDocumentId: pair.invoice.aiId,
+        confidence: Math.min(1, (pair.match?.score || 0) / 100),
+        rationale: "Pagamento in sospeso associato con matching locale",
+        transfers: (pair.transfers || []).filter((transfer) => pendingSignatures.has(transferMergeKey(transfer))),
+      } : null;
+    })
+    .filter(Boolean);
+}
+
+function recordOutstanding(record = {}) {
+  const text = String(record.row?.["Da pagare ancora"] || "").trim();
+  if (!text || text.toUpperCase() === "PAGATO") return 0;
+  return decimalFromIt(text) ?? 0;
+}
+
+function localExistingRecordMatches(transfers = [], existingRecords = []) {
+  const matches = [];
+  const used = new Set();
+  for (const record of existingRecords) {
+    const invoice = record.invoice && Object.keys(record.invoice).length
+      ? record.invoice
+      : {
+        supplier: record.row?.Fornitore || record.row?.Cliente || "",
+        invoiceNumber: record.row?.Fattura || "",
+        invoiceDate: record.row?.["Data fattura"] || "",
+        total: record.row?.Totale || "",
+        totalEur: decimalFromIt(record.row?.Totale),
+        dueDate: record.row?.Scadenza || "",
+        paymentTerms: record.row?.["Termini pagamento fattura"] || "",
+      };
+    const ranked = transfers
+      .map((transfer, index) => ({ transfer, index, match: pairDocuments([invoice], [transfer])[0]?.match }))
+      .filter((entry) => !used.has(entry.index) && entry.match?.matched && (entry.match.score || 0) >= Math.max(100, MATCH_THRESHOLD))
+      .sort((left, right) => (right.match?.score || 0) - (left.match?.score || 0));
+    if (!ranked.length) continue;
+    const remaining = recordOutstanding(record) || payableInvoiceAmount(invoice) || decimalFromIt(invoice.total) || 0;
+    const allocations = [];
+    let allocated = 0;
+    for (const entry of ranked) {
+      const amount = entry.transfer.totalEur ?? decimalFromIt(entry.transfer.total) ?? 0;
+      if (remaining && allocated + amount > remaining + 0.01 && (entry.match?.score || 0) < 140) continue;
+      allocations.push(entry);
+      used.add(entry.index);
+      allocated += amount;
+      if (remaining && allocated >= remaining - 0.01) break;
+    }
+    if (!allocations.length) continue;
+    matches.push({
+      recordId: record.id,
+      confidence: Math.min(1, allocations.reduce((sum, entry) => sum + (entry.match?.score || 0), 0) / (allocations.length * 140)),
+      rationale: "Pagamento associato a riga gia' presente con matching locale",
+      transfers: allocations.map((entry) => entry.transfer),
+    });
+  }
+  return matches;
+}
+
 function invoiceLogicalKey(invoice = {}) {
   return [
     cleanText(invoice.supplier || "").toUpperCase(),
@@ -574,6 +681,52 @@ async function callGeminiMatcher(files, existingRecords = [], pendingPayments = 
     fileIds,
     modelUsed: null,
     fallbackReason: "Gemini non ha risposto in tempo utile: documenti salvati senza abbinamento automatico.",
+  };
+}
+
+function mergeGeminiPayloads(results = []) {
+  const payloads = results.map((result) => result.payload).filter(Boolean);
+  if (!payloads.length) return null;
+  const merged = {
+    documents: [],
+    invoiceMatches: [],
+    existingRecordMatches: [],
+    existingPendingPaymentMatches: [],
+    duplicateInvoices: [],
+    modelUsed: results.find((result) => result.modelUsed)?.modelUsed || null,
+  };
+  for (const payload of payloads) {
+    merged.documents.push(...(payload.documents || []));
+    merged.invoiceMatches.push(...(payload.invoiceMatches || []));
+    merged.existingRecordMatches.push(...(payload.existingRecordMatches || []));
+    merged.existingPendingPaymentMatches.push(...(payload.existingPendingPaymentMatches || []));
+    merged.duplicateInvoices.push(...(payload.duplicateInvoices || []));
+  }
+  return merged;
+}
+
+async function callGeminiMatcherResilient(files, existingRecords = [], pendingPayments = []) {
+  const first = await callGeminiMatcher(files, existingRecords, pendingPayments);
+  if (first?.payload || files.length <= GEMINI_BATCH_SIZE) return first;
+  if (!/temporaneamente|tempo massimo|non ha risposto|503|504|429/i.test(first?.fallbackReason || "")) return first;
+
+  const chunks = [];
+  for (let index = 0; index < files.length; index += GEMINI_BATCH_SIZE) {
+    chunks.push(files.slice(index, index + GEMINI_BATCH_SIZE));
+  }
+  const results = [];
+  for (const chunk of chunks) {
+    const result = await callGeminiMatcher(chunk, existingRecords, pendingPayments);
+    if (result?.payload) results.push(result);
+  }
+  const mergedPayload = mergeGeminiPayloads(results);
+  if (!mergedPayload) return first;
+  return {
+    payload: mergedPayload,
+    fileIds: files.map((file, index) => ({ fileName: file.name, documentId: documentIdForFile(file.name, index) })),
+    modelUsed: mergedPayload.modelUsed || results[0]?.modelUsed,
+    fallbackReason: "",
+    chunked: true,
   };
 }
 
@@ -1245,7 +1398,7 @@ function enrichTransferWithLocal(aiTransfer, localTransfer) {
 }
 
 async function classifyDocumentsWithGemini(files, existingRecords, pendingPayments) {
-  const aiResult = await callGeminiMatcher(files, existingRecords, pendingPayments);
+  const aiResult = await callGeminiMatcherResilient(files, existingRecords, pendingPayments);
   if (!aiResult || !aiResult.payload) {
     return aiResult?.fallbackReason
       ? { aiUsed: false, aiFallbackReason: aiResult.fallbackReason }
@@ -1419,26 +1572,50 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
     ...parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
     ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}) })),
   ];
+  const localPairs = pairDocuments(invoices, transfers);
+  const duplicateInvoices = localDuplicateInvoices(invoices, existingRecords);
+  const duplicateInvoiceIds = new Set(duplicateInvoices.map((entry) => entry.invoiceDocumentId));
+  const effectivePairs = localPairs.filter((pair) => !duplicateInvoiceIds.has(pair.invoice.aiId));
+  const confidentPairs = effectivePairs.filter((pair) => pair.match?.matched && (pair.match?.score || 0) >= 100);
+  const weakPairs = effectivePairs.filter((pair) => !confidentPairs.includes(pair));
+  const pendingPaymentMatches = localPendingMatches(confidentPairs, pendingPayments);
+  const existingRecordMatches = localExistingRecordMatches(
+    parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
+    existingRecords,
+  );
   return {
     aiUsed: false,
-    aiFallbackReason: aiResult?.aiFallbackReason || "",
+    aiFallbackReason: aiResult?.aiFallbackReason
+      ? `${aiResult.aiFallbackReason} Matching locale applicato dove affidabile.`
+      : "Matching locale applicato.",
     invoices,
     transfers,
-    matches: invoices.map((invoice) => ({
-      invoice,
-      transfers: [],
-      match: {
-        score: 0,
-        threshold: 70,
-        matched: false,
-        reasons: [],
-        issues: ["In attesa del matching AI"],
-        summary: "",
-      },
-    })),
-    existingRecordMatches: [],
-    pendingPaymentMatches: [],
-    duplicateInvoices: [],
+    matches: [
+      ...confidentPairs.map((pair) => ({
+        ...pair,
+        match: {
+          ...pair.match,
+          reasons: [...(pair.match.reasons || []), "Matching locale affidabile"],
+        },
+      })),
+      ...weakPairs.map((pair) => ({
+        invoice: pair.invoice,
+        transfers: [],
+        match: {
+          ...(pair.match || {}),
+          matched: false,
+          issues: [
+            ...new Set([
+              ...((pair.match && pair.match.issues) || []),
+              "Caso non abbastanza certo per il matching locale: richiede controllo AI",
+            ]),
+          ],
+        },
+      })),
+    ],
+    existingRecordMatches,
+    pendingPaymentMatches,
+    duplicateInvoices,
   };
 }
 

@@ -642,10 +642,15 @@ uploadForm.addEventListener("submit", async (event) => {
     }
     const result = await insertRecords(builtRecords);
     let aiExistingUpdated = 0;
+    let localAttached = 0;
     if (aiUsed) {
       setLoadingState(true, "Aggiornamento archivio", "Sto applicando gli abbinamenti trovati dall'AI e aggiornando l'archivio condiviso.");
       await loadRecords();
       aiExistingUpdated = await applyAiExistingMatches(existingRecordMatches, uploadsByName);
+    } else {
+      setLoadingState(true, "Aggiornamento archivio", "Sto applicando il matching locale affidabile e aggiornando l'archivio condiviso.");
+      await loadRecords();
+      localAttached = await attachTransfersToExistingRecords(transfers, uploadsByName);
     }
     const matchedTransferKeys = new Set([
       ...matches.flatMap((entry) => entry.transfers.map((transfer) => transferIdentity(transfer))),
@@ -680,7 +685,7 @@ uploadForm.addEventListener("submit", async (event) => {
       pendingWarning = `${pendingWarning} | alcuni sospesi gia' associati non sono stati ripuliti`;
     }
     await loadRecords();
-    const attached = 0;
+    const attached = localAttached;
     uploadForm.reset();
     updateFileLabels();
     const duplicateCount = result.duplicates.length + (duplicateInvoices?.length || 0);
@@ -690,8 +695,8 @@ uploadForm.addEventListener("submit", async (event) => {
     const aiUpdatedText = aiExistingUpdated ? `, ${aiExistingUpdated} pagamenti associati a righe già presenti` : "";
     const pendingMatchedText = pendingMatchedCount ? `, ${pendingMatchedCount} pagamenti in sospeso riassociati` : "";
     const attachedText = attached ? `, ${attached} pagamenti aggiunti a fatture esistenti` : "";
-    const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "AI non disponibile";
-    const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}, documenti memorizzati senza abbinamento automatico` : "";
+    const modeText = aiUsed ? `Gemini attivo (${aiModelUsed || "modello AI"})` : "Matching locale";
+    const fallbackText = !aiUsed && aiFallbackReason ? ` - ${aiFallbackReason}` : "";
     const uploadWarningText = uploadFailures?.length ? ` | ${uploadFailures.length} file non salvati nello storage cloud` : "";
     const supplierWarningText = result.warnings?.length ? ` | ${result.warnings.length} fornitori non aggiornati in rubrica` : "";
     showToast(`${result.added.length} righe aggiunte${duplicateText}${updatedText}${aiUpdatedText}${pendingMatchedText}${attachedText} (${modeText})${fallbackText}${uploadWarningText}${supplierWarningText}${pendingWarning}`);
