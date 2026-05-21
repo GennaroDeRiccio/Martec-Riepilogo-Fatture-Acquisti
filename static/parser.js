@@ -1554,9 +1554,22 @@ async function classifyDocumentsWithGemini(files, existingRecords, pendingPaymen
   };
 }
 
-export async function classifyDocuments(files, existingRecords = [], pendingPayments = []) {
-  const aiResult = await classifyDocumentsWithGemini(files, existingRecords, pendingPayments);
-  if (aiResult?.aiUsed) return aiResult;
+function shouldEscalateLocalResult(localResult) {
+  const unresolvedInvoices = (localResult.matches || []).filter((entry) => !entry.match?.matched);
+  const matchedTransferKeys = new Set((localResult.matches || [])
+    .flatMap((entry) => (entry.transfers || []).map((transfer) => transferMergeKey(transfer))));
+  const uploadedTransfers = (localResult.transfers || []).filter((transfer) => !transfer.fromPendingPayment);
+  const unresolvedNonRibaTransfers = uploadedTransfers.filter((transfer) =>
+    !matchedTransferKeys.has(transferMergeKey(transfer))
+    && String(transfer.paymentType || "").toUpperCase() !== "RIBA");
+  const ambiguousInvoices = unresolvedInvoices.filter((entry) =>
+    (entry.match?.score || 0) >= 20
+    || (entry.match?.issues || []).some((issue) => /diverso|simili|riferimento|scadenza/i.test(issue)));
+
+  return ambiguousInvoices.length > 0 || unresolvedNonRibaTransfers.length > 0;
+}
+
+async function classifyDocumentsLocally(files, existingRecords = [], pendingPayments = [], aiFallbackReason = "") {
   const parsed = [];
   for (const file of files) {
     const docs = await classifyPdf(file);
@@ -1570,23 +1583,23 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
   );
   const transfers = [
     ...parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
-    ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}) })),
+    ...(pendingPayments || []).map((entry) => ({ ...(entry.payment || {}), fromPendingPayment: true, pendingSignature: entry.signature })),
   ];
   const localPairs = pairDocuments(invoices, transfers);
   const duplicateInvoices = localDuplicateInvoices(invoices, existingRecords);
   const duplicateInvoiceIds = new Set(duplicateInvoices.map((entry) => entry.invoiceDocumentId));
   const effectivePairs = localPairs.filter((pair) => !duplicateInvoiceIds.has(pair.invoice.aiId));
-  const confidentPairs = effectivePairs.filter((pair) => pair.match?.matched && (pair.match?.score || 0) >= 100);
+  const confidentPairs = effectivePairs.filter((pair) => pair.match?.matched);
   const weakPairs = effectivePairs.filter((pair) => !confidentPairs.includes(pair));
-  const pendingPaymentMatches = localPendingMatches(confidentPairs, pendingPayments);
+  const pendingPaymentMatches = [];
   const existingRecordMatches = localExistingRecordMatches(
     parsed.filter((item) => item.parsed.type === "transfer").map((item) => ({ ...item.parsed, fileName: item.file.name })),
     existingRecords,
   );
   return {
     aiUsed: false,
-    aiFallbackReason: aiResult?.aiFallbackReason
-      ? `${aiResult.aiFallbackReason} Matching locale applicato dove affidabile.`
+    aiFallbackReason: aiFallbackReason
+      ? `${aiFallbackReason} Matching locale applicato.`
       : "Matching locale applicato.",
     invoices,
     transfers,
@@ -1617,6 +1630,19 @@ export async function classifyDocuments(files, existingRecords = [], pendingPaym
     pendingPaymentMatches,
     duplicateInvoices,
   };
+}
+
+export async function classifyDocuments(files, existingRecords = [], pendingPayments = []) {
+  const localResult = await classifyDocumentsLocally(files, existingRecords, pendingPayments);
+  if (!shouldEscalateLocalResult(localResult)) return localResult;
+
+  const aiResult = await classifyDocumentsWithGemini(files, existingRecords, pendingPayments);
+  if (aiResult?.aiUsed) return {
+    ...aiResult,
+    aiFallbackReason: "AI usata per casi ambigui dopo matching locale.",
+  };
+
+  return classifyDocumentsLocally(files, existingRecords, pendingPayments, aiResult?.aiFallbackReason || "AI non disponibile sui casi ambigui.");
 }
 
 export function recordsFromImportedRows(rows, startingIndex) {

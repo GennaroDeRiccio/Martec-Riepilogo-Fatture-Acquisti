@@ -585,10 +585,10 @@ uploadForm.addEventListener("submit", async (event) => {
   const submitButton = uploadForm.querySelector("button[type='submit']");
   submitButton.disabled = true;
   submitButton.textContent = "Estrazione...";
-  setLoadingState(true, "Elaborazione documenti", "Sto caricando i file e preparando l'analisi AI.");
+  setLoadingState(true, "Elaborazione documenti", "Sto caricando i file e preparando l'analisi automatica.");
   try {
     const { uploads, failures: uploadFailures } = await uploadFilesToStorage(files);
-    setLoadingState(true, "Analisi AI in corso", "L'AI sta leggendo fatture e pagamenti per estrarre i dati e costruire gli abbinamenti.");
+    setLoadingState(true, "Analisi documenti in corso", "Il motore locale sta leggendo fatture e pagamenti; l'AI verra' usata solo se il caso e' ambiguo.");
     const uploadsByName = new Map(uploads.map((upload) => [upload.fileName, upload.path]));
     const { matches, transfers, existingRecordMatches, pendingPaymentMatches, duplicateInvoices, aiUsed, aiModelUsed, aiFallbackReason } = await classifyDocuments(files, records, pendingPayments);
     const byInvoiceKey = existingRecordsByInvoiceKey(records);
